@@ -6,17 +6,19 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val localProperties = Properties().apply {
-    val localPropertiesFile = rootProject.file("local.properties")
-    if (localPropertiesFile.exists()) {
-        localPropertiesFile.inputStream().use { load(it) }
+// Kept out of local.properties: the Flutter tool rewrites that file during a
+// build and would drop the signing entries.
+val signingProperties = Properties().apply {
+    val signingPropertiesFile = rootProject.file("dev-signing.properties")
+    if (signingPropertiesFile.exists()) {
+        signingPropertiesFile.inputStream().use { load(it) }
     }
 }
 
 val releaseStoreFile = file("keystore.jks")
-val releaseStorePassword = localProperties.getProperty("storePassword")
-val releaseKeyAlias = localProperties.getProperty("keyAlias")
-val releaseKeyPassword = localProperties.getProperty("keyPassword")
+val releaseStorePassword = signingProperties.getProperty("storePassword")
+val releaseKeyAlias = signingProperties.getProperty("keyAlias")
+val releaseKeyPassword = signingProperties.getProperty("keyPassword")
 val hasReleaseSigning = releaseStoreFile.exists() &&
     releaseStorePassword != null &&
     releaseKeyAlias != null &&
@@ -66,12 +68,14 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
             } else {
-                signingConfig = signingConfigs.getByName("debug")
-                applicationIdSuffix = ".dev"
+                signingConfigs.getByName("debug")
             }
+            // This fork exists to sit beside the official app, so the release
+            // build keeps the .dev package even when a release key is present.
+            applicationIdSuffix = ".dev"
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
