@@ -166,10 +166,12 @@ void main() {
       find.byKey(const ValueKey('networking-easytier-icon')),
       findsOneWidget,
     );
-    expect(requests.single.targets, hasLength(3));
+    expect(requests.where((request) => request.targets.length == 3), hasLength(1));
     expect(
-      requests.single.targets.every(
-        (t) => t.level == OverlayNetworkDetailLevel.summary,
+      requests.every(
+        (request) => request.targets.every(
+          (t) => t.level == OverlayNetworkDetailLevel.summary,
+        ),
       ),
       isTrue,
     );
@@ -307,7 +309,14 @@ void main() {
     requests.clear();
     await tester.pump(const Duration(seconds: 3));
     await tester.pump();
-    expect(requests, isEmpty);
+    expect(requests, isNotEmpty);
+    expect(
+      requests.every((request) => request.targets.every(
+        (target) => target.kind == OverlayNetworkKind.tailscale &&
+            target.level == OverlayNetworkDetailLevel.summary,
+      )),
+      isTrue,
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

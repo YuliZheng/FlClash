@@ -28,6 +28,7 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     'lib/views/navigation.dart',
     'lib/views/networking/networking.dart',
     'test/widgets/tailscale_control_test.dart',
+    'test/widgets/easytier_networking_test.dart',
     'test/providers/state_derived_test.dart',
     'test/database/tailnet_legacy_test.dart',
     'test/database/migration_v1_to_v2_test.dart',

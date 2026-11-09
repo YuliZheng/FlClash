@@ -21,8 +21,8 @@ void main() {
         id: 7,
         label: 'Existing tailnet YAML',
         url: '',
-        autoUpdateDuration: const Duration(hours: 12),
-        selectedMap: const {'Home': 'Tailscale'},
+        autoUpdateDuration: Duration(hours: 12),
+        selectedMap: {'Home': 'Tailscale'},
       ).toCompanion(),
     ]);
     await seed.close();
