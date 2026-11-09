@@ -166,7 +166,14 @@ void main() {
       find.byKey(const ValueKey('networking-easytier-icon')),
       findsOneWidget,
     );
-    expect(requests.where((request) => request.targets.length == 3), hasLength(1));
+    expect(
+      requests.expand((request) => request.targets).map((target) => target.kind).toSet(),
+      {
+        OverlayNetworkKind.easytier,
+        OverlayNetworkKind.tailscale,
+        OverlayNetworkKind.zerotier,
+      },
+    );
     expect(
       requests.every(
         (request) => request.targets.every(
