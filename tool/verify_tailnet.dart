@@ -23,10 +23,14 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     'lib/core/controller.dart',
     'lib/core/interface.dart',
     'lib/core/method.dart',
+    'lib/database/database.dart',
+    'lib/database/legacy_tailnet.dart',
     'lib/views/navigation.dart',
     'lib/views/networking/networking.dart',
     'test/widgets/tailscale_control_test.dart',
     'test/providers/state_derived_test.dart',
+    'test/database/tailnet_legacy_test.dart',
+    'test/database/migration_v1_to_v2_test.dart',
     'setup.dart',
     'tool/verify_tailnet.dart',
   ];
@@ -59,6 +63,8 @@ Future<int> verifyTailnetBuild(String rootDir) async {
       'test/providers/state_derived_test.dart',
       'test/core/interface_message_test.dart',
       'test/core/protocol_contract_test.dart',
+      'test/database/tailnet_legacy_test.dart',
+      'test/database/migration_v1_to_v2_test.dart',
     ]);
   } finally {
     pubspec.writeAsStringSync(original);

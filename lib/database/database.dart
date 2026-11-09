@@ -15,6 +15,7 @@ part 'generated/database.g.dart';
 part 'groups.dart';
 part 'icons.dart';
 part 'links.dart';
+part 'legacy_tailnet.dart';
 part 'profiles.dart';
 part 'rules.dart';
 part 'scripts.dart';
@@ -31,10 +32,21 @@ part 'scripts.dart';
   daos: [ProfilesDao, ScriptsDao, RulesDao, ProxyGroupsDao, IconRecordsDao],
 )
 class Database extends _$Database {
-  Database([QueryExecutor? executor]) : super(executor ?? _openConnection());
+  Database([QueryExecutor? executor])
+    : _legacyBackupPath = executor == null
+          ? appPath.databasePath.then((path) => '$path.before-tailnet-v21')
+          : null,
+      super(executor ?? _openConnection());
+
+  @visibleForTesting
+  Database.withLegacyBackup(QueryExecutor executor, String backupPath)
+    : _legacyBackupPath = Future.value(backupPath),
+      super(executor);
+
+  final Future<String>? _legacyBackupPath;
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 22;
 
   static LazyDatabase _openConnection() {
     return LazyDatabase(() async {
@@ -47,6 +59,14 @@ class Database extends _$Database {
   MigrationStrategy get migration {
     return MigrationStrategy(
       onUpgrade: (m, from, to) async {
+        if (from == 21) {
+          await _backupLegacyTailnetDatabase();
+          await transaction(() => _migrateLegacyTailnetDatabase(m));
+          return;
+        }
+        if (from > 5) {
+          throw StateError('Unsupported FlClash database version: $from');
+        }
         if (from < 2) {
           await m.createTable(proxyGroups);
           await m.createTable(iconRecords);

@@ -6,7 +6,9 @@
 ## 使用
 
 包名为 `com.follow.clash.dev`，使用 2026-10-31 自用开发版的同一签名。
-覆盖安装该开发版可保留其私有目录中的配置和 Tailscale 登录信息。
+覆盖安装该开发版保留其私有目录与 Tailscale 登录信息。
+首次升级会迁移旧版 v21 的 YAML／URL 配置数据库，并在私有目录保留 `database.sqlite.before-tailnet-v21` 完整备份和 `tailnet_v21_*` 原始表。
+旧版编辑器创建的 custom 配置需先在旧版导出成 YAML；检测到这类配置会停止迁移并保留原库。
 官方版 `com.follow.clash` 与此包相互独立。
 
 使用现有含 `type: tailscale` 的配置启动 FlClash，然后打开底部「组网」。
