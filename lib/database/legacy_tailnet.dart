@@ -23,7 +23,10 @@ extension _LegacyTailnetMigration on Database {
       );
     }
 
-    for (final table in [profiles, scripts, rules, proxyGroups, iconRecords]) {
+    final tablesToMigrate = <TableInfo<Table, dynamic>>[
+      profiles, scripts, rules, proxyGroups, iconRecords,
+    ];
+    for (final table in tablesToMigrate) {
       final name = table.actualTableName;
       final indexes = await customSelect(
         "SELECT name FROM sqlite_master WHERE type = 'index' "
@@ -37,7 +40,7 @@ extension _LegacyTailnetMigration on Database {
       await customStatement('ALTER TABLE "$name" RENAME TO "tailnet_v21_$name"');
     }
     await migrator.createAll();
-    for (final table in [profiles, scripts, rules, proxyGroups, iconRecords]) {
+    for (final table in tablesToMigrate) {
       final name = table.actualTableName;
       final oldColumns = await _legacyColumns('tailnet_v21_$name');
       final columns = table.$columns

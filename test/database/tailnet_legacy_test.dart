@@ -17,7 +17,7 @@ void main() {
     raw = sqlite3.openInMemory();
     final seed = fl.Database(NativeDatabase.opened(raw, closeUnderlyingOnClose: false));
     await seed.profilesDao.putAll([
-      Profile(
+      const Profile(
         id: 7,
         label: 'Existing tailnet YAML',
         url: '',
@@ -75,7 +75,7 @@ void main() {
     expect(group.hidden, isTrue);
     expect(group.disableUDP, isTrue);
     await database.profilesDao.putAll([
-      Profile(id: 8, label: 'New', autoUpdateDuration: const Duration(hours: 12)).toCompanion(),
+      const Profile(id: 8, label: 'New', autoUpdateDuration: Duration(hours: 12)).toCompanion(),
     ]);
     expect(await database.profilesDao.query().get(), hasLength(2));
     expect(raw.select('PRAGMA user_version').single['user_version'], database.schemaVersion);

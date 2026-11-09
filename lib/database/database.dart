@@ -39,9 +39,8 @@ class Database extends _$Database {
       super(executor ?? _openConnection());
 
   @visibleForTesting
-  Database.withLegacyBackup(QueryExecutor executor, String backupPath)
-    : _legacyBackupPath = Future.value(backupPath),
-      super(executor);
+  Database.withLegacyBackup(super.executor, String backupPath)
+    : _legacyBackupPath = Future.value(backupPath);
 
   final Future<String>? _legacyBackupPath;
 
