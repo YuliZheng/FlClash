@@ -146,11 +146,14 @@ void main() {
             ),
           ],
         );
-    expect(networkingItem().modes, containsAll([
-      NavigationItemMode.mobile,
-      NavigationItemMode.desktop,
-      NavigationItemMode.more,
-    ]));
+    expect(
+      networkingItem().modes,
+      containsAll([
+        NavigationItemMode.mobile,
+        NavigationItemMode.desktop,
+        NavigationItemMode.more,
+      ]),
+    );
     expect(showsNetworkingTool(), isTrue);
     container
         .read(groupsProvider.notifier)

@@ -15,7 +15,9 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     );
     final result = await process.exitCode;
     report.writeln('$result: $command');
-    File('${output.path}/verification.txt').writeAsStringSync(report.toString());
+    File(
+      '${output.path}/verification.txt',
+    ).writeAsStringSync(report.toString());
     return result;
   }
 
@@ -38,15 +40,20 @@ Future<int> verifyTailnetBuild(String rootDir) async {
   var result = await run('dart', ['format', ...dartFiles]);
   if (result != 0) return result;
   final diff = await Process.run('git', ['diff', '--', ...dartFiles]);
-  File('${output.path}/formatted-source.patch').writeAsStringSync(
-    diff.stdout.toString(),
-  );
+  File(
+    '${output.path}/formatted-source.patch',
+  ).writeAsStringSync(diff.stdout.toString());
   result = await run('flutter', ['analyze', '--no-fatal-infos']);
   if (result != 0) return result;
   for (final target in ['.', 'github.com/metacubex/mihomo/adapter/outbound']) {
     result = await run('go', [
-      'test', '-tags', 'with_gvisor', target,
-      '-run', target == '.' ? 'Overlay|Tailscale' : 'TestTailscale', '-count=1',
+      'test',
+      '-tags',
+      'with_gvisor',
+      target,
+      '-run',
+      target == '.' ? 'Overlay|Tailscale' : 'TestTailscale',
+      '-count=1',
     ], cwd: '$rootDir/core');
     if (result != 0) return result;
   }
@@ -55,7 +62,10 @@ Future<int> verifyTailnetBuild(String rootDir) async {
   final original = pubspec.readAsStringSync();
   try {
     pubspec.writeAsStringSync(
-      original.replaceAll(RegExp(r'build_assets:\s*true'), 'build_assets: false'),
+      original.replaceAll(
+        RegExp(r'build_assets:\s*true'),
+        'build_assets: false',
+      ),
     );
     return await run('flutter', [
       'test',

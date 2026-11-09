@@ -167,7 +167,10 @@ void main() {
       findsOneWidget,
     );
     expect(
-      requests.expand((request) => request.targets).map((target) => target.kind).toSet(),
+      requests
+          .expand((request) => request.targets)
+          .map((target) => target.kind)
+          .toSet(),
       {
         OverlayNetworkKind.easytier,
         OverlayNetworkKind.tailscale,
@@ -318,10 +321,13 @@ void main() {
     await tester.pump();
     expect(requests, isNotEmpty);
     expect(
-      requests.every((request) => request.targets.every(
-        (target) => target.kind == OverlayNetworkKind.tailscale &&
-            target.level == OverlayNetworkDetailLevel.summary,
-      )),
+      requests.every(
+        (request) => request.targets.every(
+          (target) =>
+              target.kind == OverlayNetworkKind.tailscale &&
+              target.level == OverlayNetworkDetailLevel.summary,
+        ),
+      ),
       isTrue,
     );
     await tester.pumpWidget(const SizedBox.shrink());

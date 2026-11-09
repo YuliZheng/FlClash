@@ -24,7 +24,11 @@ extension _LegacyTailnetMigration on Database {
     }
 
     final tablesToMigrate = <TableInfo<Table, dynamic>>[
-      profiles, scripts, rules, proxyGroups, iconRecords,
+      profiles,
+      scripts,
+      rules,
+      proxyGroups,
+      iconRecords,
     ];
     for (final table in tablesToMigrate) {
       final name = table.actualTableName;
@@ -37,7 +41,9 @@ extension _LegacyTailnetMigration on Database {
         final identifier = index.read<String>('name').replaceAll('"', '""');
         await customStatement('DROP INDEX "$identifier"');
       }
-      await customStatement('ALTER TABLE "$name" RENAME TO "tailnet_v21_$name"');
+      await customStatement(
+        'ALTER TABLE "$name" RENAME TO "tailnet_v21_$name"',
+      );
     }
     await migrator.createAll();
     for (final table in tablesToMigrate) {
@@ -65,7 +71,9 @@ extension _LegacyTailnetMigration on Database {
       final link = ProfileRuleLink(
         ruleId: row.read<int>('id'),
         profileId: row.readNullable<int>('profile_id'),
-        scene: row.readNullable<int>('profile_id') == null ? null : RuleScene.added,
+        scene: row.readNullable<int>('profile_id') == null
+            ? null
+            : RuleScene.added,
         order: row.readNullable<String>('order'),
       );
       await into(profileRuleLinks).insert(link.toCompanion());
@@ -97,7 +105,15 @@ extension _LegacyTailnetMigration on Database {
             ? 'disable_u_d_p'
             : entry.key.replaceAll('-', '_');
         if (!groupColumns.contains(column) ||
-            {'id', 'profile_id', 'name', 'type', 'proxies', 'use', 'order'}.contains(column)) {
+            {
+              'id',
+              'profile_id',
+              'name',
+              'type',
+              'proxies',
+              'use',
+              'order',
+            }.contains(column)) {
           continue;
         }
         final value = entry.value;

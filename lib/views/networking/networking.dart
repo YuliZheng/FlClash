@@ -45,10 +45,12 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
   Duration get pollInterval => const Duration(seconds: 1);
 
   @override
-  bool get canPoll => super.canPoll &&
+  bool get canPoll =>
+      super.canPoll &&
       (_expanded.isNotEmpty ||
-          _configuredProxies(ref.read(groupsProvider))
-              .any((proxy) => proxy.type == 'tailscale'));
+          _configuredProxies(
+            ref.read(groupsProvider),
+          ).any((proxy) => proxy.type == 'tailscale'));
 
   @override
   void didChangeDependencies() {
@@ -63,7 +65,9 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
   @override
   Future<void> poll(PollGuard isCurrent) async {
     final proxies = _configuredProxies(ref.read(groupsProvider));
-    final tailscale = proxies.where((proxy) => proxy.type == 'tailscale').toList();
+    final tailscale = proxies
+        .where((proxy) => proxy.type == 'tailscale')
+        .toList();
     if (tailscale.isNotEmpty) {
       await _loadSummaries(tailscale, force: true);
       if (!isCurrent()) return;
@@ -409,7 +413,10 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
     }
   }
 
-  Future<void> _setTailscaleRunning(_NetworkingProxy proxy, bool running) async {
+  Future<void> _setTailscaleRunning(
+    _NetworkingProxy proxy,
+    bool running,
+  ) async {
     final key = _key(proxy);
     if (_activating.contains(key) || _loggingOut.contains(key)) {
       return;
@@ -619,7 +626,9 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
     };
     final summary = error != null
         ? context.appLocalizations.networkingError
-        : status == null ? null : _summary(context, status);
+        : status == null
+        ? null
+        : _summary(context, status);
     return ExpansionTile(
       key: PageStorageKey('$key\u0000$_expansionGeneration'),
       initiallyExpanded: _expanded.contains(key),
@@ -672,14 +681,17 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
                   ),
                 Switch(
                   key: ValueKey('tailscale-running-${proxy.name}'),
-                  value: error == null && status != null &&
+                  value:
+                      error == null &&
+                      status != null &&
                       const {
                         OverlayNetworkState.connected,
                         OverlayNetworkState.starting,
                         OverlayNetworkState.needsLogin,
                         OverlayNetworkState.needsApproval,
                       }.contains(status.state),
-                  onChanged: status == null ||
+                  onChanged:
+                      status == null ||
                           error != null ||
                           _activating.contains(key) ||
                           _loggingOut.contains(key) ||
@@ -730,7 +742,8 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
       (proxy) => !_expanded.contains(_key(proxy)),
     );
     return CommonScaffold(
-      title: proxies.isNotEmpty &&
+      title:
+          proxies.isNotEmpty &&
               proxies.every((proxy) => proxy.type == 'tailscale')
           ? 'Tailscale'
           : appLocalizations.networking,

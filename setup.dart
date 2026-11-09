@@ -388,7 +388,9 @@ Future<int> _package(
   await ensureGeoData(rootDir: rootDir);
 
   if (platform == 'android') {
-    final certificates = File('$rootDir/core/mihomo/component/ca/ca-certificates.crt');
+    final certificates = File(
+      '$rootDir/core/mihomo/component/ca/ca-certificates.crt',
+    );
     await certificates.copy('$rootDir/assets/data/ca-certificates.crt');
     final verification = await verifyTailnetBuild(rootDir);
     if (verification != 0) return verification;
