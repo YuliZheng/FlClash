@@ -45,7 +45,10 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
   Duration get pollInterval => const Duration(seconds: 1);
 
   @override
-  bool get canPoll => super.canPoll && _expanded.isNotEmpty;
+  bool get canPoll => super.canPoll &&
+      (_expanded.isNotEmpty ||
+          _configuredProxies(ref.read(groupsProvider))
+              .any((proxy) => proxy.type == 'tailscale'));
 
   @override
   void didChangeDependencies() {
@@ -60,10 +63,15 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
   @override
   Future<void> poll(PollGuard isCurrent) async {
     final proxies = _configuredProxies(ref.read(groupsProvider));
+    final tailscale = proxies.where((proxy) => proxy.type == 'tailscale').toList();
+    if (tailscale.isNotEmpty) {
+      await _loadSummaries(tailscale, force: true);
+      if (!isCurrent()) return;
+    }
     final proxyKeys = proxies.map(_key).toSet();
     _expanded.retainWhere(proxyKeys.contains);
     if (_expanded.isEmpty) {
-      stopPolling();
+      if (tailscale.isEmpty) stopPolling();
       return;
     }
     await _loadDetails(
@@ -333,7 +341,7 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
     if (shouldExpand) {
       startPolling();
       unawaited(_loadDetails(proxies));
-    } else {
+    } else if (!canPoll) {
       stopPolling();
     }
   }
@@ -609,7 +617,9 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
       OverlayNetworkKind.zerotier => 'ZeroTier',
       OverlayNetworkKind.easytier => 'EasyTier',
     };
-    final summary = status == null ? null : _summary(context, status);
+    final summary = error != null
+        ? context.appLocalizations.networkingError
+        : status == null ? null : _summary(context, status);
     return ExpansionTile(
       key: PageStorageKey('$key\u0000$_expansionGeneration'),
       initiallyExpanded: _expanded.contains(key),
@@ -631,7 +641,7 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
           startPolling();
           _loadDetails([proxy]);
         } else {
-          if (_expanded.isEmpty) {
+          if (!canPoll) {
             stopPolling();
           }
         }
@@ -662,7 +672,7 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
                   ),
                 Switch(
                   key: ValueKey('tailscale-running-${proxy.name}'),
-                  value: status != null &&
+                  value: error == null && status != null &&
                       const {
                         OverlayNetworkState.connected,
                         OverlayNetworkState.starting,

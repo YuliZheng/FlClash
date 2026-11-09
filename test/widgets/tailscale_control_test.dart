@@ -34,6 +34,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       final core = _Core();
       var running = initialRunning;
+      var unavailable = false;
       final pending = Completer<OverlayNetworkStatus>();
       OverlayNetworkStatus status() => OverlayNetworkStatus(
         name: 'TAILNET',
@@ -47,7 +48,10 @@ void main() {
         error: '',
       );
       when(() => core.getOverlayNetworkStatus(any())).thenAnswer(
-        (_) async => [status()],
+        (_) async {
+          if (unavailable) throw StateError('Core unavailable');
+          return [status()];
+        },
       );
       when(() => core.setTailscaleRunning('TAILNET', !initialRunning)).thenAnswer(
         (_) => pending.future,
@@ -84,6 +88,20 @@ void main() {
       );
       await tester.pumpAndSettle();
       final toggle = find.byKey(const ValueKey('tailscale-running-TAILNET'));
+      expect(tester.widget<Switch>(toggle).value, initialRunning);
+      running = !initialRunning;
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(toggle).value, !initialRunning);
+      unavailable = true;
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(toggle).onChanged, isNull);
+      expect(tester.widget<Switch>(toggle).value, isFalse);
+      unavailable = false;
+      running = initialRunning;
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
       expect(tester.widget<Switch>(toggle).value, initialRunning);
       await tester.tap(toggle);
       await tester.pump();
