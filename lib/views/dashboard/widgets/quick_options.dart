@@ -1,0 +1,231 @@
+import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/providers/config.dart';
+import 'package:fl_clash/views/config/general.dart';
+import 'package:fl_clash/views/config/network.dart';
+import 'package:fl_clash/widgets/widgets.dart';
+import 'package:material_symbols_icons/symbols.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+class _QuickSwitchCard extends ConsumerWidget {
+  const _QuickSwitchCard({
+    required this.label,
+    required this.iconData,
+    this.itemsBuilder,
+    required this.selector,
+    required this.onChanged,
+  });
+
+  final String label;
+  final IconData iconData;
+  final List<Widget> Function(WidgetRef ref)? itemsBuilder;
+  final ProviderListenable<bool> selector;
+  final void Function(WidgetRef ref, bool value) onChanged;
+
+  void _showOptions(
+    BuildContext context,
+    List<Widget> Function(WidgetRef ref) itemsBuilder,
+  ) {
+    showSheet(
+      context: context,
+      builder: (_) {
+        return AdaptiveSheetScaffold(
+          body: Consumer(
+            builder: (_, ref, _) => ListView(
+              padding: sectionPagePadding,
+              children: [
+                generateSectionV3(isFirst: true, items: itemsBuilder(ref)),
+              ],
+            ),
+          ),
+          title: label,
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final itemsBuilder = this.itemsBuilder;
+    return SizedBox(
+      height: getWidgetHeight(1),
+      child: CommonCard(
+        radius: AppCorner.lg,
+        onPressed: itemsBuilder == null
+            ? () => onChanged(ref, !ref.read(selector))
+            : () => _showOptions(context, itemsBuilder),
+        info: Info(label: label, iconData: iconData),
+        child: Container(
+          padding: baseInfoEdgeInsets.copyWith(top: 4, bottom: 8, right: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.max,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Flexible(
+                flex: 1,
+                child: TooltipText(
+                  text: Text(
+                    itemsBuilder == null
+                        ? context.appLocalizations.toggle
+                        : context.appLocalizations.options,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.titleSmall?.adjustSize(-2).toLight,
+                  ),
+                ),
+              ),
+              Consumer(
+                builder: (_, ref, _) {
+                  return Switch(
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    value: ref.watch(selector),
+                    onChanged: (value) => onChanged(ref, value),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class TUNButton extends StatelessWidget {
+  const TUNButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: context.appLocalizations.tun,
+      iconData: Symbols.stacked_line_chart,
+      itemsBuilder: (_) => [
+        if (system.isDesktop) const TUNItem(),
+        const TunStackItem(),
+        const TunMtuItem(),
+      ],
+      selector: patchClashConfigProvider.select((state) => state.tun.enable),
+      onChanged: (ref, value) {
+        ref
+            .read(patchClashConfigProvider.notifier)
+            .update((state) => state.copyWith.tun(enable: value));
+      },
+    );
+  }
+}
+
+class SystemProxyButton extends StatelessWidget {
+  const SystemProxyButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: context.appLocalizations.systemProxy,
+      iconData: Symbols.shuffle,
+      itemsBuilder: (_) => const [SystemProxyItem(), BypassDomainItem()],
+      selector: networkSettingProvider.select((state) => state.systemProxy),
+      onChanged: (ref, value) {
+        ref
+            .read(networkSettingProvider.notifier)
+            .update((state) => state.copyWith(systemProxy: value));
+      },
+    );
+  }
+}
+
+class VpnButton extends StatelessWidget {
+  const VpnButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: 'VPN',
+      iconData: Symbols.stacked_line_chart,
+      itemsBuilder: (_) => const [
+        VPNItem(),
+        VpnSystemProxyItem(),
+        TunStackItem(),
+        TunMtuItem(),
+      ],
+      selector: vpnSettingProvider.select((state) => state.enable),
+      onChanged: (ref, value) {
+        ref
+            .read(vpnSettingProvider.notifier)
+            .update((state) => state.copyWith(enable: value));
+      },
+    );
+  }
+}
+
+class AllowLanButton extends StatelessWidget {
+  const AllowLanButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: context.appLocalizations.allowLan,
+      iconData: Symbols.lan,
+      itemsBuilder: (ref) => [
+        const AllowLanItem(),
+        const PortItem(),
+        const AuthenticationItem(),
+        if (ref.watch(
+          networkSettingProvider.select((state) => state.authentication.enable),
+        )) ...const [AuthenticationAccountItem(), AuthenticationPasswordItem()],
+      ],
+      selector: patchClashConfigProvider.select((state) => state.allowLan),
+      onChanged: (ref, value) {
+        ref
+            .read(patchClashConfigProvider.notifier)
+            .update((state) => state.copyWith(allowLan: value));
+      },
+    );
+  }
+}
+
+class Ipv6Button extends StatelessWidget {
+  const Ipv6Button({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: 'IPv6',
+      iconData: Symbols.language,
+      selector: patchClashConfigProvider.select((state) => state.ipv6),
+      onChanged: (ref, value) {
+        ref
+            .read(patchClashConfigProvider.notifier)
+            .update((state) => state.copyWith(ipv6: value));
+      },
+    );
+  }
+}
+
+class ExternalControllerButton extends StatelessWidget {
+  const ExternalControllerButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _QuickSwitchCard(
+      label: context.appLocalizations.externalController,
+      iconData: Symbols.api,
+      itemsBuilder: (_) => const [ExternalControllerItem()],
+      selector: patchClashConfigProvider.select(
+        (state) => state.externalController.isNotEmpty,
+      ),
+      onChanged: (ref, value) {
+        ref
+            .read(patchClashConfigProvider.notifier)
+            .update(
+              (state) => state.copyWith(
+                externalController: value
+                    ? '$localhost:$defaultExternalControllerPort'
+                    : '',
+              ),
+            );
+      },
+    );
+  }
+}

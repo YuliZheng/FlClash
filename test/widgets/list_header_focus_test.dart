@@ -1,4 +1,5 @@
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
@@ -10,8 +11,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sliver_tools/sliver_tools.dart';
 
-import '../helpers/test_app.dart';
 import '../helpers/test_profiles.dart';
 
 void main() {
@@ -65,12 +66,13 @@ void main() {
         child: MaterialApp(
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
           builder: (context, child) {
-            return wrapAppScopes(context, child!);
+            globalState.measure = Measure.of(context, 1);
+            globalState.theme = CommonTheme.of(context, 1);
+            return child!;
           },
           home: const ProxiesView(),
         ),
@@ -219,6 +221,114 @@ void main() {
       tester.getTopLeft(proxyFinder).dy,
       greaterThanOrEqualTo(headerBottom.dy),
     );
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('list header density follows the selected style', (tester) async {
+    final container = await pumpListLayout(tester);
+    final header = find.byType(ListHeader);
+    final looseHeight = tester.getSize(header).height;
+
+    container
+        .read(proxiesStyleSettingProvider.notifier)
+        .update(
+          (state) =>
+              state.copyWith(listHeaderStyle: ProxiesListHeaderStyle.standard),
+        );
+    await tester.pump();
+    final standardHeight = tester.getSize(header).height;
+
+    container
+        .read(proxiesStyleSettingProvider.notifier)
+        .update(
+          (state) =>
+              state.copyWith(listHeaderStyle: ProxiesListHeaderStyle.tight),
+        );
+    await tester.pump();
+    final tightHeight = tester.getSize(header).height;
+
+    expect(looseHeight, greaterThan(standardHeight));
+    expect(standardHeight, greaterThan(tightHeight));
+    expect(tester.takeException(), null);
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('only the tight list header uses circular corner arcs', (
+    tester,
+  ) async {
+    final container = await pumpListLayout(tester);
+    final headerButton = find.descendant(
+      of: find.byType(ListHeader),
+      matching: find.byType(FilledButton),
+    );
+
+    OutlinedBorder? shape() =>
+        tester.widget<FilledButton>(headerButton).style?.shape?.resolve({});
+
+    expect(shape(), isA<RoundedSuperellipseBorder>());
+
+    container
+        .read(proxiesStyleSettingProvider.notifier)
+        .update(
+          (state) =>
+              state.copyWith(listHeaderStyle: ProxiesListHeaderStyle.tight),
+        );
+    await tester.pump();
+
+    expect(shape(), isA<RoundedRectangleBorder>());
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('list header fades into proxy rows', (tester) async {
+    await pumpListLayout(tester);
+
+    final headerBackground = tester.widget<Container>(
+      find.byKey(const ValueKey('Selector.headerFade')),
+    );
+    final decoration = headerBackground.decoration! as BoxDecoration;
+    final gradient = decoration.gradient! as LinearGradient;
+
+    expect(gradient.colors.last.a, 0);
+    expect(gradient.colors[gradient.colors.length - 2].a, greaterThan(0));
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('expanded proxy rows use the capped adaptive animation', (
+    tester,
+  ) async {
+    await pumpListLayout(tester, proxyCount: 100);
+
+    final animatedExtent = tester.widget<SliverAnimatedPaintExtent>(
+      find.byType(SliverAnimatedPaintExtent, skipOffstage: false),
+    );
+    expect(animatedExtent.duration, const Duration(milliseconds: 120));
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('collapsed proxy rows retain their animation sliver', (
+    tester,
+  ) async {
+    await pumpListLayout(tester, proxyCount: 100, expanded: false);
+
+    final animatedExtent = tester.widget<SliverAnimatedPaintExtent>(
+      find.byType(SliverAnimatedPaintExtent, skipOffstage: false),
+    );
+    expect(animatedExtent.duration, const Duration(milliseconds: 250));
 
     await tester.pump(const Duration(seconds: 1));
     await tester.pumpWidget(const SizedBox());

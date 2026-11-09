@@ -1,18 +1,14 @@
 import 'dart:convert';
 
-import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/common/preferences.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../helpers/preferences.dart';
-
 const _sharedState = SharedState(
   stopTip: 'stop',
   startTip: 'start',
-  localNetworkTip: 'local',
   currentProfileName: 'profile',
   stopText: 'stopped',
   onlyStatisticsProxy: true,
@@ -20,24 +16,13 @@ const _sharedState = SharedState(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues({});
 
   late SharedPreferences store;
 
   setUp(() async {
-    await mockPreferences();
     store = await SharedPreferences.getInstance();
-  });
-
-  group('applied config md5', () {
-    test('round-trips a written md5 and forgets a cleared one', () async {
-      expect(await preferences.getAppliedConfigMd5(), isNull);
-
-      await preferences.saveAppliedConfigMd5('abc');
-      expect(await preferences.getAppliedConfigMd5(), 'abc');
-
-      await preferences.saveAppliedConfigMd5(null);
-      expect(store.containsKey(appliedConfigMd5Key), isFalse);
-    });
+    await store.clear();
   });
 
   group('version', () {
@@ -61,6 +46,7 @@ void main() {
       const config = Config(
         themeProps: defaultThemeProps,
         currentProfileId: 42,
+        overrideDns: true,
         excludeSSIDs: ['home'],
       );
 
@@ -69,6 +55,7 @@ void main() {
 
       expect(restored, isNotNull);
       expect(restored!.currentProfileId, 42);
+      expect(restored.overrideDns, isTrue);
       expect(restored.excludeSSIDs, ['home']);
     });
 
@@ -136,32 +123,5 @@ void main() {
 
   test('isInit resolves true once shared preferences are available', () async {
     expect(await preferences.isInit, isTrue);
-  });
-
-  group('boot record', () {
-    test('getBootRecord returns null when nothing is stored', () async {
-      expect(await preferences.getBootRecord(), isNull);
-    });
-
-    test('saveBootRecord then getBootRecord round-trips the record', () async {
-      const record = BootRecord(
-        stage: BootStage.starting,
-        profileId: 5,
-        startedAt: 111,
-        failureCount: 1,
-        lastFailedProfileId: 4,
-        handledExitAt: 99,
-      );
-
-      await preferences.saveBootRecord(record);
-
-      expect(await preferences.getBootRecord(), record);
-    });
-
-    test('getBootRecord survives a corrupt entry', () async {
-      await store.setString(bootRecordKey, 'not json');
-
-      expect(await preferences.getBootRecord(), isNull);
-    });
   });
 }

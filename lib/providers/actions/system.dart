@@ -10,6 +10,9 @@ class SystemAction extends _$SystemAction {
   void build() {}
 
   Future<List<Package>> getPackages() async {
+    if (ref.read(isMobileViewProvider)) {
+      await Future.delayed(commonDuration);
+    }
     ref.read(packagesProvider.notifier).value = await app?.getPackages() ?? [];
     return ref.read(packagesProvider);
   }
@@ -32,6 +35,15 @@ class SystemAction extends _$SystemAction {
     return coordinator.exit(cleanup: () => cleanupExitResources(needSave));
   }
 
+  Future<void> handleReset(ExitStep clearData) async {
+    await closeCore();
+    try {
+      await clearData();
+    } finally {
+      await handleExit(false);
+    }
+  }
+
   @protected
   Duration get exitWatchdogDuration => const Duration(seconds: 3);
 
@@ -49,9 +61,7 @@ class SystemAction extends _$SystemAction {
     }
     await Future.wait([
       ?saveOperation,
-      bootGuard.markClosed(),
-      if (systemDnsCoordinator != null) systemDnsCoordinator!.shutdown(),
-      ?systemProxyQueue?.close(),
+      if (proxy != null) proxy!.stopProxy(onlyIfNeeded: true),
     ]);
   }
 
@@ -125,12 +135,6 @@ class SystemAction extends _$SystemAction {
         .update((state) => state.copyWith.tun(enable: !state.tun.enable));
   }
 
-  void updateSystemProxy() {
-    ref
-        .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(systemProxy: !state.systemProxy));
-  }
-
   Future<void> copyProxyEnv() async {
     final port = ref.read(
       patchClashConfigProvider.select((state) => state.mixedPort),
@@ -138,6 +142,12 @@ class SystemAction extends _$SystemAction {
     await Clipboard.setData(
       ClipboardData(text: proxyEnvCommand(port, isWindows: system.isWindows)),
     );
+  }
+
+  void updateSystemProxy() {
+    ref
+        .read(networkSettingProvider.notifier)
+        .update((state) => state.copyWith(systemProxy: !state.systemProxy));
   }
 
   void updateAutoLaunch() {

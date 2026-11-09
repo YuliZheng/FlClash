@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:code_forge/code_forge.dart' show CodeForgeSuggestionDetails;
-import 'package:fl_clash/ui/ui.dart';
+import 'package:fl_clash/common/common.dart';
 import 'package:material_ui/material_ui.dart';
 
 const _suggestionInset = 8.0;
@@ -125,7 +125,7 @@ class _EditorCompletionPopupState extends State<EditorCompletionPopup> {
             horizontal: _suggestionItemPadding,
           ),
           decoration: ShapeDecoration(
-            color: selected ? colorScheme.primaryContainer : null,
+            color: selected ? colorScheme.secondaryContainer : null,
             shape: _suggestionItemShape,
           ),
           child: Row(
@@ -138,7 +138,7 @@ class _EditorCompletionPopupState extends State<EditorCompletionPopup> {
                   overflow: TextOverflow.ellipsis,
                   style: widget.textStyle.copyWith(
                     color: selected
-                        ? colorScheme.onPrimaryContainer
+                        ? colorScheme.onSecondaryContainer
                         : colorScheme.onSurface,
                   ),
                 ),
@@ -155,7 +155,7 @@ class _EditorCompletionPopupState extends State<EditorCompletionPopup> {
                     textAlign: TextAlign.end,
                     style: _detailStyle.copyWith(
                       color: selected
-                          ? colorScheme.onPrimaryContainer
+                          ? colorScheme.onSecondaryContainer
                           : colorScheme.onSurfaceVariant,
                     ),
                   ),
@@ -181,9 +181,7 @@ class _EditorCompletionPopupState extends State<EditorCompletionPopup> {
         return Material(
           type: MaterialType.card,
           elevation: 8,
-          color: SurfaceLevel.floatingOf(
-            context.colorScheme,
-          ).colorOf(context.colorScheme),
+          color: context.colorScheme.surfaceContainer,
           textStyle: widget.textStyle,
           clipBehavior: Clip.antiAlias,
           shape: _suggestionShape,

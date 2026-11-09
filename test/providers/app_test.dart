@@ -1,7 +1,14 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
+import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/common/fixed.dart';
+import 'package:fl_clash/common/request.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/app.dart';
+import 'package:fl_clash/providers/config.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
@@ -37,6 +44,43 @@ void main() {
         container.read(authorizedTunEnableProvider),
         TunAuthorizationState.unauthorized,
       );
+    });
+  });
+
+  group('Logs provider', () {
+    Log log(LogLevel level, String payload) {
+      return Log.app(payload).copyWith(logLevel: level);
+    }
+
+    test('keeps logs at or above the configured log level', () {
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith(logLevel: LogLevel.warning));
+
+      final notifier = container.read(logsProvider.notifier);
+      notifier.add(log(LogLevel.info, 'info'));
+      notifier.addLogs([
+        log(LogLevel.warning, 'warning'),
+        log(LogLevel.error, 'error'),
+      ]);
+
+      expect(container.read(logsProvider).list.map((item) => item.payload), [
+        'warning',
+        'error',
+      ]);
+    });
+
+    test('drops all logs when configured log level is silent', () {
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith(logLevel: LogLevel.silent));
+
+      container.read(logsProvider.notifier).addLogs([
+        log(LogLevel.error, 'error'),
+        log(LogLevel.warning, 'warning'),
+      ]);
+
+      expect(container.read(logsProvider).list, isEmpty);
     });
   });
 
@@ -165,6 +209,15 @@ void main() {
     });
   });
 
+  group('viewHeight provider (derived)', () {
+    test('derives from viewSize height', () {
+      container
+          .read(viewSizeProvider.notifier)
+          .update((_) => const Size(800, 600));
+      expect(container.read(viewHeightProvider), 600);
+    });
+  });
+
   group('Init provider', () {
     test('default is false', () {
       expect(container.read(initProvider), false);
@@ -242,6 +295,9 @@ void main() {
   group('append-backed buffers notify on every arrival', () {
     test('Logs.add advances the generation and reaches listeners', () {
       container.read(logsProvider.notifier).value = FixedList(3);
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith(logLevel: LogLevel.debug));
       final revisions = <int>[];
       final subscription = container.listen(
         logsProvider.select((state) => state.revision),
@@ -286,45 +342,6 @@ void main() {
       expect(container.read(requestsProvider).length, 1);
     });
 
-    test('Requests.updateTraffic updates the requests it names', () {
-      TrackerInfo request(String id) => TrackerInfo(
-        id: id,
-        upload: 460,
-        start: DateTime.utc(2026),
-        metadata: const Metadata(network: 'tcp', host: 'example.com'),
-        chains: const ['Proxy'],
-        rule: 'DOMAIN',
-        rulePayload: 'example.com',
-      );
-      final notifier = container.read(requestsProvider.notifier);
-      notifier.value = FixedList(3);
-      notifier.addRequest(request('a'));
-      notifier.addRequest(request('b'));
-      var notifications = 0;
-      final subscription = container.listen(
-        requestsProvider.select((state) => state.revision),
-        (_, _) => notifications++,
-      );
-      addTearDown(subscription.close);
-
-      notifier.updateTraffic({'gone': (upload: 1, download: 1)});
-      expect(notifications, 0);
-
-      notifier.updateTraffic({
-        'a': (upload: 520, download: 257835),
-        'gone': (upload: 1, download: 1),
-      });
-
-      expect(notifications, 1);
-      expect(
-        container
-            .read(requestsProvider)
-            .list
-            .map((request) => (request.id, request.upload, request.download)),
-        [('a', 520, 257835), ('b', 460, 0)],
-      );
-    });
-
     test('Traffics.addTraffic reaches listeners and clear resets', () {
       container.read(trafficsProvider.notifier).value = FixedList(3);
       var notifications = 0;
@@ -342,6 +359,19 @@ void main() {
       notifier.clear();
       expect(notifications, 3);
       expect(container.read(trafficsProvider).length, 0);
+    });
+  });
+
+  group('CheckIpNum provider', () {
+    test('default is 0', () {
+      expect(container.read(checkIpNumProvider), 0);
+    });
+
+    test('increment returns previous value and updates state', () {
+      final value = container.read(checkIpNumProvider.notifier).add();
+
+      expect(value, 0);
+      expect(container.read(checkIpNumProvider), 1);
     });
   });
 
@@ -378,37 +408,56 @@ void main() {
       expect(identical(container.read(delayDataSourceProvider), state), isTrue);
     });
 
-    test('a reset of the state is not undone by the next delay', () {
-      const url = 'https://test.example';
-      final notifier = container.read(delayDataSourceProvider.notifier);
-      notifier.setDelay(const Delay(name: 'A', url: url, value: 10));
+    test('publishes a batch of delays once', () {
+      var notifications = 0;
+      container.listen(delayDataSourceProvider, (_, _) => notifications++);
 
-      notifier.value = {};
-      notifier.setDelay(const Delay(name: 'B', url: url, value: 20));
+      container.read(delayDataSourceProvider.notifier).setDelays([
+        for (var i = 0; i < 100; i++)
+          Delay(name: 'P$i', url: 'https://test.example', value: i),
+      ]);
 
-      expect(container.read(delayDataSourceProvider), {
-        url: {'B': 20},
+      expect(notifications, 1);
+      expect(container.read(delayDataSourceProvider)['https://test.example'], {
+        for (var i = 0; i < 100; i++) 'P$i': i,
       });
     });
 
-    test('applies a batch of delays as one state change', () {
-      const url = 'https://test.example';
-      final changes = <DelayMap>[];
-      container.listen(delayDataSourceProvider, (_, next) => changes.add(next));
+    test('keeps writing after the state is replaced from outside', () {
+      final notifier = container.read(delayDataSourceProvider.notifier);
+      notifier.setDelay(
+        const Delay(name: 'Old', url: 'https://test.example', value: 1),
+      );
+      notifier.value = {};
 
-      container.read(delayDataSourceProvider.notifier).setDelays([
-        const Delay(name: 'A', url: url, value: 10),
-        const Delay(name: 'B', url: url, value: -1),
-        const Delay(name: 'A', url: url, value: 20),
-        const Delay(name: 'A', url: 'https://other.example', value: 30),
-      ]);
+      notifier.setDelay(
+        const Delay(name: 'New', url: 'https://test.example', value: 2),
+      );
 
-      expect(changes, [
-        {
-          url: {'A': 20, 'B': -1},
-          'https://other.example': {'A': 30},
-        },
-      ]);
+      expect(container.read(delayDataSourceProvider), {
+        'https://test.example': {'New': 2},
+      });
+    });
+  });
+
+  group('PendingDelayTests provider', () {
+    test('acquires a batch with one notification and counts holders', () {
+      final notifier = container.read(pendingDelayTestsProvider.notifier);
+      var notifications = 0;
+      container.listen(pendingDelayTestsProvider, (_, _) => notifications++);
+
+      notifier.acquire([for (var i = 0; i < 100; i++) 'k$i']);
+      notifier.acquire(['k0']);
+      notifier.release(['k0']);
+
+      expect(notifications, 1);
+      expect(container.read(pendingDelayTestsProvider), hasLength(100));
+      expect(container.read(pendingDelayTestsProvider), contains('k0'));
+
+      notifier.release([for (var i = 0; i < 100; i++) 'k$i']);
+
+      expect(notifications, 2);
+      expect(container.read(pendingDelayTestsProvider), isEmpty);
     });
   });
 
@@ -517,4 +566,93 @@ void main() {
       expect(container.read(coreStatusProvider), CoreStatus.disconnected);
     });
   });
+
+  group('NetworkDetection provider', () {
+    late HttpClientAdapter originalAdapter;
+
+    setUp(() {
+      originalAdapter = request.dio.httpClientAdapter;
+    });
+
+    tearDown(() {
+      request.dio.httpClientAdapter = originalAdapter;
+    });
+
+    test(
+      'ignores a canceled stale check after a newer check succeeds',
+      () async {
+        request.dio.httpClientAdapter = _DelayedCancelIpAdapter();
+        final container = ProviderContainer(
+          overrides: [
+            initProvider.overrideWithBuild((_, _) => true),
+            runTimeProvider.overrideWithBuild((_, _) => 1),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        final notifier = container.read(networkDetectionProvider.notifier);
+        notifier.startCheck();
+        await Future.delayed(commonDuration + const Duration(milliseconds: 50));
+
+        notifier.startCheck();
+        await Future.delayed(
+          commonDuration + const Duration(milliseconds: 120),
+        );
+
+        expect(container.read(networkDetectionProvider).ipInfo?.ip, '2.2.2.2');
+        expect(container.read(networkDetectionProvider).isLoading, false);
+
+        await Future.delayed(const Duration(milliseconds: 620));
+
+        expect(container.read(networkDetectionProvider).ipInfo?.ip, '2.2.2.2');
+        expect(container.read(networkDetectionProvider).isLoading, false);
+      },
+    );
+  });
+}
+
+class _DelayedCancelIpAdapter implements HttpClientAdapter {
+  static const _sourceCount = 7;
+
+  int _requestCount = 0;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) {
+    _requestCount++;
+    final batch = ((_requestCount - 1) ~/ _sourceCount) + 1;
+    if (batch == 1) {
+      final completer = Completer<ResponseBody>();
+      cancelFuture?.then((_) {
+        Timer(const Duration(milliseconds: 500), () {
+          if (completer.isCompleted) return;
+          completer.completeError(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.cancel,
+              error: 'cancelled',
+            ),
+          );
+        });
+      });
+      return completer.future;
+    }
+
+    return Future.delayed(
+      const Duration(milliseconds: 10),
+      () => ResponseBody.fromString(
+        '{"ip":"2.2.2.2","country_code":"US"}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      ),
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
 }

@@ -1,8 +1,8 @@
 import 'package:fl_clash/common/app_ports.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:fl_clash/ui/icons/app_glyphs.dart';
 import 'package:fl_clash/views/views.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 
 class Navigation implements NavigationPort {
@@ -12,16 +12,18 @@ class Navigation implements NavigationPort {
   List<NavigationItem> getItems({
     bool openLogs = false,
     bool hasProxies = false,
+    bool hasNetworking = false,
   }) {
     return [
       NavigationItem(
-        glyph: AppGlyphs.dashboard,
+        keep: false,
+        icon: const Icon(Symbols.space_dashboard),
         label: PageLabel.dashboard,
         builder: (_) =>
             const DashboardView(key: GlobalObjectKey(PageLabel.dashboard)),
       ),
       NavigationItem(
-        glyph: AppGlyphs.proxies,
+        icon: const Icon(Symbols.article),
         label: PageLabel.proxies,
         builder: (_) =>
             const ProxiesView(key: GlobalObjectKey(PageLabel.proxies)),
@@ -30,41 +32,60 @@ class Navigation implements NavigationPort {
             : [],
       ),
       NavigationItem(
-        glyph: AppGlyphs.profiles,
+        icon: const Icon(Symbols.folder),
         label: PageLabel.profiles,
         builder: (_) =>
             const ProfilesView(key: GlobalObjectKey(PageLabel.profiles)),
       ),
       NavigationItem(
-        glyph: AppGlyphs.requests,
+        icon: const Icon(Symbols.dns),
+        label: PageLabel.dnsQueries,
+        builder: (_) =>
+            const DnsQueriesView(key: GlobalObjectKey(PageLabel.dnsQueries)),
+        modes: [NavigationItemMode.more],
+      ),
+      NavigationItem(
+        icon: const Icon(Symbols.view_timeline),
         label: PageLabel.requests,
         builder: (_) =>
             const RequestsView(key: GlobalObjectKey(PageLabel.requests)),
-        modes: [NavigationItemMode.moreFull],
+        modes: [NavigationItemMode.more],
       ),
       NavigationItem(
-        glyph: AppGlyphs.connections,
+        icon: const Icon(Symbols.ballot),
         label: PageLabel.connections,
         builder: (_) =>
             const ConnectionsView(key: GlobalObjectKey(PageLabel.connections)),
-        modes: [NavigationItemMode.desktop, NavigationItemMode.moreFull],
+        modes: [NavigationItemMode.desktop, NavigationItemMode.more],
       ),
       NavigationItem(
-        glyph: AppGlyphs.dns,
-        label: PageLabel.dns,
-        builder: (_) =>
-            const DnsQueriesView(key: GlobalObjectKey(PageLabel.dns)),
-        modes: [NavigationItemMode.moreFull],
+        icon: const Icon(Symbols.rule),
+        label: PageLabel.rules,
+        builder: (_) => const RulesView(key: GlobalObjectKey(PageLabel.rules)),
+        modes: [NavigationItemMode.more],
       ),
       NavigationItem(
-        glyph: AppGlyphs.resources,
+        icon: const Icon(Symbols.home_storage),
         label: PageLabel.resources,
         builder: (_) =>
             const ResourcesView(key: GlobalObjectKey(PageLabel.resources)),
         modes: [NavigationItemMode.more],
       ),
       NavigationItem(
-        glyph: AppGlyphs.logs,
+        icon: const Icon(Symbols.hub),
+        label: PageLabel.networking,
+        builder: (_) =>
+            const NetworkingView(key: GlobalObjectKey(PageLabel.networking)),
+        modes: hasNetworking
+            ? [
+                NavigationItemMode.mobile,
+                NavigationItemMode.desktop,
+                NavigationItemMode.more,
+              ]
+            : [],
+      ),
+      NavigationItem(
+        icon: const Icon(Symbols.bug_report),
         label: PageLabel.logs,
         builder: (_) => const LogsView(key: GlobalObjectKey(PageLabel.logs)),
         modes: openLogs
@@ -72,7 +93,7 @@ class Navigation implements NavigationPort {
             : [],
       ),
       NavigationItem(
-        glyph: AppGlyphs.tools,
+        icon: const Icon(Symbols.handyman),
         label: PageLabel.tools,
         builder: (_) => const ToolsView(key: GlobalObjectKey(PageLabel.tools)),
         modes: [NavigationItemMode.desktop, NavigationItemMode.mobile],

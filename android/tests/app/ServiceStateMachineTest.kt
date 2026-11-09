@@ -1,11 +1,11 @@
-package com.follow.clash
+package cc.chenx.flclash
 
-import com.follow.clash.common.AccessControlMode
-import com.follow.clash.models.SetupParams
-import com.follow.clash.models.SharedState
-import com.follow.clash.service.models.AccessControlProps
-import com.follow.clash.service.models.NotificationParams
-import com.follow.clash.service.models.VpnOptions
+import cc.chenx.flclash.common.AccessControlMode
+import cc.chenx.flclash.models.SetupParams
+import cc.chenx.flclash.models.SharedState
+import cc.chenx.flclash.service.models.AccessControlProps
+import cc.chenx.flclash.service.models.NotificationParams
+import cc.chenx.flclash.service.models.VpnOptions
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,7 +22,7 @@ private fun vpnOptions(enable: Boolean = true, stack: String = "gvisor") = VpnOp
     enable = enable,
     port = 7890,
     ipv6 = false,
-    dnsHijacking = false,
+    captureDns = false,
     accessControlProps = AccessControlProps(
         enable = false,
         mode = AccessControlMode.ACCEPT_SELECTED,
@@ -31,9 +31,13 @@ private fun vpnOptions(enable: Boolean = true, stack: String = "gvisor") = VpnOp
     ),
     allowBypass = false,
     systemProxy = true,
+    suspendSupport = null,
     bypassDomain = emptyList(),
     stack = stack,
+    mtu = null,
     routeAddress = emptyList(),
+    disableIcmpForwarding = false,
+    endpointIndependentNat = false,
 )
 
 private fun configuredState(enable: Boolean = true, stack: String = "gvisor") = SharedState(
@@ -99,11 +103,14 @@ private class FakeHost(override val scope: CoroutineScope) : ServiceStateHost {
     var app: AppGateway? = null
     var duringSetup: (suspend () -> Unit)? = null
     var beforeStartService: (() -> Unit)? = null
-    var lastStartOptions: VpnOptions? = null
 
     override var runtime: ServiceRuntime? = null
-    override val homeDirPath = "/data/user/0/com.follow.clash/files"
+    override val homeDirPath = "/data/user/0/cc.chenx.flclash/files"
     override val sdkInt = 34
+    override var startMessage = "Start VPN"
+    override var stopMessage = "Stop VPN"
+    override var localNetworkMessage =
+        "Local network permission denied: using the mips stack, LAN is unreachable."
 
     val toasts = mutableListOf<String>()
     val logs = mutableListOf<String>()
@@ -114,6 +121,7 @@ private class FakeHost(override val scope: CoroutineScope) : ServiceStateHost {
     var stoppedNotifications = 0
     var lastInitParams: String? = null
     var lastSetupParams: String? = null
+    var lastStartOptions: VpnOptions? = null
 
     override fun log(message: String) {
         logs += message
@@ -149,14 +157,18 @@ private class FakeHost(override val scope: CoroutineScope) : ServiceStateHost {
         return setupResult
     }
 
-    override suspend fun startService(options: VpnOptions): Boolean {
+    override suspend fun startService(options: VpnOptions, requested: VpnOptions): Boolean {
         startCalls++
         lastStartOptions = options
         beforeStartService?.invoke()
         if (!startSucceeds) {
             return false
         }
-        runtime = ServiceRuntime(vpn = runsAsVpn ?: options.enable, startedAtMillis = STARTED_AT)
+        runtime = ServiceRuntime(
+            options = options.copy(enable = runsAsVpn ?: options.enable),
+            requested = requested,
+            startedAtMillis = STARTED_AT,
+        )
         return true
     }
 
@@ -181,12 +193,19 @@ class ServiceStateMachineTest {
         val params = ServiceStateMachine.notificationParams(
             SharedState(
                 currentProfileName = "Work",
-                stopText = "Disconnect",
                 onlyStatisticsProxy = true,
+                networkSpeedNotification = true,
             ),
         )
 
-        assertEquals(NotificationParams("Work", "Disconnect", true), params)
+        assertEquals(
+            NotificationParams(
+                title = "Work",
+                onlyStatisticsProxy = true,
+                networkSpeedNotification = true,
+            ),
+            params,
+        )
     }
 
     @Test
@@ -370,15 +389,16 @@ class ServiceStateMachineTest {
 
     /** Android 17 drops the kernel hop system/mixed rely on until the permission is granted. */
     @Test
-    fun `a denied local network permission falls back to the gvisor stack`() = runTest {
+    fun `a denied local network permission falls back to the mips stack`() = runTest {
         val host = FakeHost(backgroundScope)
         host.localNetworkPermissionGranted = false
         val machine = ServiceStateMachine(host)
         machine.syncSharedState(configuredState(stack = "system"))
 
         assertTrue(machine.requestStart().await())
-        assertEquals("gvisor", host.lastStartOptions?.stack)
-        assertTrue(host.toasts.contains(configuredState().localNetworkTip))
+        assertEquals("mips", host.lastStartOptions?.stack)
+        assertEquals("system", host.runtime?.requested?.stack)
+        assertTrue(host.toasts.contains(host.localNetworkMessage))
     }
 
     @Test
@@ -389,7 +409,7 @@ class ServiceStateMachineTest {
 
         assertTrue(machine.requestStart().await())
         assertEquals("mixed", host.lastStartOptions?.stack)
-        assertFalse(host.toasts.contains(configuredState().localNetworkTip))
+        assertFalse(host.toasts.contains(host.localNetworkMessage))
     }
 
     @Test
@@ -401,7 +421,7 @@ class ServiceStateMachineTest {
 
         assertTrue(machine.requestStart().await())
         assertEquals("system", host.lastStartOptions?.stack)
-        assertFalse(host.toasts.contains(configuredState().localNetworkTip))
+        assertFalse(host.toasts.contains(host.localNetworkMessage))
     }
 
     @Test
@@ -416,7 +436,7 @@ class ServiceStateMachineTest {
         assertTrue(machine.requestStart().await())
         assertEquals(1, app.localNetworkRequests)
         assertEquals(1, host.startCalls)
-        assertEquals("gvisor", host.lastStartOptions?.stack)
+        assertEquals("mips", host.lastStartOptions?.stack)
     }
 
     @Test
@@ -430,6 +450,39 @@ class ServiceStateMachineTest {
         assertEquals(RunState.STOPPED, machine.runState.value)
         assertEquals(1, host.stopCalls)
         assertEquals(0, host.stoppedNotifications)
+    }
+
+    @Test
+    fun `a start that overtakes a pending stop restarts with the new options`() = runTest {
+        val host = FakeHost(backgroundScope)
+        val machine = ServiceStateMachine(host)
+        machine.syncSharedState(configuredState())
+        machine.requestStart().await()
+        machine.syncSharedState(configuredState(stack = "mixed"))
+
+        val stop = machine.requestStop()
+        val start = machine.requestStart()
+
+        assertFalse(stop.await())
+        assertTrue(start.await())
+        assertEquals(1, host.stopCalls)
+        assertEquals(2, host.startCalls)
+        assertEquals("mixed", host.runtime?.options?.stack)
+        assertEquals(RunState.STARTED, machine.runState.value)
+    }
+
+    @Test
+    fun `a start after a completed stop owes no second restart`() = runTest {
+        val host = FakeHost(backgroundScope)
+        val machine = ServiceStateMachine(host)
+        machine.syncSharedState(configuredState())
+        machine.requestStart().await()
+        machine.requestStop().await()
+        machine.requestStart().await()
+
+        assertTrue(machine.requestStart().await())
+        assertEquals(1, host.stopCalls)
+        assertEquals(2, host.startCalls)
     }
 
     @Test
@@ -695,7 +748,8 @@ class ServiceStateMachineTest {
     fun `handleStopAction announces itself before stopping`() = runTest {
         val host = FakeHost(backgroundScope)
         val machine = ServiceStateMachine(host)
-        machine.syncSharedState(configuredState().copy(stopTip = "Stopping..."))
+        host.stopMessage = "Stopping..."
+        machine.syncSharedState(configuredState())
         machine.requestStart().await()
 
         machine.handleStopAction()
@@ -763,12 +817,21 @@ class ServiceStateMachineTest {
         machine.syncSharedState(
             SharedState(
                 currentProfileName = "Work",
-                stopText = "Disconnect",
                 onlyStatisticsProxy = true,
+                networkSpeedNotification = true,
             ),
         )
 
-        assertEquals(listOf(NotificationParams("Work", "Disconnect", true)), host.notificationParams)
+        assertEquals(
+            listOf(
+                NotificationParams(
+                    title = "Work",
+                    onlyStatisticsProxy = true,
+                    networkSpeedNotification = true,
+                ),
+            ),
+            host.notificationParams,
+        )
     }
 
     @Test

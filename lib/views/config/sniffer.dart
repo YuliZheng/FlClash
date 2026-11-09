@@ -1,286 +1,263 @@
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:fl_clash/pages/editor.dart';
-import 'package:fl_clash/views/config/override.dart';
+import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-extension on SnifferOverrideKey {
-  String label(AppLocalizations l) => switch (this) {
-    SnifferOverrideKey.enable => l.status,
-    SnifferOverrideKey.overrideDest => l.overrideDestination,
-    SnifferOverrideKey.forceDnsMapping => l.forceDnsMapping,
-    SnifferOverrideKey.parsePureIp => l.parsePureIp,
-    SnifferOverrideKey.forceDomain => l.forceDomain,
-    SnifferOverrideKey.skipDomain => l.skipDomain,
-    SnifferOverrideKey.skipSrcAddress => l.skipSrcAddress,
-    SnifferOverrideKey.skipDstAddress => l.skipDstAddress,
-    SnifferOverrideKey.sniffHttp ||
-    SnifferOverrideKey.sniffTls ||
-    SnifferOverrideKey.sniffQuic => field,
-  };
+typedef _SnifferUpdate<T> = Sniffer Function(Sniffer sniffer, T value);
 
-  ConfigLabel? get description => switch (this) {
-    SnifferOverrideKey.enable => (l) => l.snifferStatusDesc,
-    SnifferOverrideKey.overrideDest => (l) => l.overrideDestinationDesc,
-    SnifferOverrideKey.forceDnsMapping => (l) => l.forceDnsMappingDesc,
-    SnifferOverrideKey.parsePureIp => (l) => l.parsePureIpDesc,
-    SnifferOverrideKey.forceDomain => (l) => l.forceDomainDesc,
-    SnifferOverrideKey.skipDomain => (l) => l.skipDomainDesc,
-    _ => null,
-  };
+ProviderListenable<T> _snifferSelector<T>(T Function(Sniffer sniffer) select) {
+  return patchClashConfigProvider.select((state) => select(state.sniffer));
 }
 
-typedef _SnifferState = OverrideState<SnifferOverrideKey, Sniffer>;
-
-_SnifferState _profileSniffer(ProfileOverrides overrides) =>
-    (model: overrides.sniffer, keys: overrides.snifferOverrideKeys);
-
-ProfileOverrides _setProfileSniffer(
-  ProfileOverrides overrides,
-  _SnifferState state,
-) => overrides.copyWith(sniffer: state.model, snifferOverrideKeys: state.keys);
-
-class SnifferView extends OverrideView<SnifferOverrideKey, Sniffer> {
-  SnifferView(int profileId, {super.key})
-    : super(
-        spec: _SnifferOverrideSpec(
-          ProfileOverrideTarget(
-            profileId,
-            get: _profileSniffer,
-            set: _setProfileSniffer,
-          ),
-        ),
-      );
+ConfigWriter<T> _snifferWriter<T>(_SnifferUpdate<T> update) {
+  return (ref, value) => ref
+      .read(patchClashConfigProvider.notifier)
+      .update((state) => state.copyWith(sniffer: update(state.sniffer, value)));
 }
 
-class _SnifferOverrideSpec extends OverrideSpec<SnifferOverrideKey, Sniffer>
-    with OverrideQuickEdit<SnifferOverrideKey, Sniffer> {
-  const _SnifferOverrideSpec(this.target);
+ConfigToggleItem _snifferToggle({
+  required ConfigLabel title,
+  required ConfigLabel subtitle,
+  required bool Function(Sniffer sniffer) select,
+  required _SnifferUpdate<bool> update,
+}) {
+  return ConfigToggleItem(
+    title: title,
+    subtitle: subtitle,
+    selector: _snifferSelector(select),
+    onChanged: _snifferWriter(update),
+  );
+}
 
-  @override
-  final OverrideTarget<SnifferOverrideKey, Sniffer> target;
+ConfigListInputItem _snifferList({
+  required ConfigLabel title,
+  required ConfigLabel subtitle,
+  required List<String> Function(Sniffer sniffer) select,
+  required _SnifferUpdate<List<String>> update,
+  required int itemMaxLength,
+}) {
+  return ConfigListInputItem(
+    title: title,
+    subtitle: subtitle,
+    selector: _snifferSelector(select),
+    onChanged: _snifferWriter(update),
+    itemMaxLength: itemMaxLength,
+  );
+}
 
-  @override
-  String title(AppLocalizations l) => l.sniffer;
-
-  @override
-  List<SnifferOverrideKey> get values => SnifferOverrideKey.values;
-
-  @override
-  String overrideYaml(Sniffer model, Set<SnifferOverrideKey> keys) =>
-      model.overrideYaml(keys);
-
-  @override
-  _SnifferState applyOverrideYaml(Sniffer model, String content) {
-    final result = model.applyOverrideYaml(content);
-    return (model: result.sniffer, keys: result.keys);
+Sniffer _updateProtocol(
+  Sniffer sniffer,
+  String protocol,
+  SnifferConfig? Function(SnifferConfig? config) update,
+) {
+  final sniff = Map<String, SnifferConfig>.from(sniffer.sniff);
+  final config = update(sniff[protocol]);
+  if (config == null) {
+    sniff.remove(protocol);
+  } else {
+    sniff[protocol] = config;
   }
-
-  @override
-  EditorSchema get schema => EditorSchema.sniffer;
-
-  @override
-  NullStatusIllustration get illustration => NullStatusIllustration.sniffer;
-
-  @override
-  Sniffer get defaults => defaultSniffer;
-
-  @override
-  String sectionOf(SnifferOverrideKey key, AppLocalizations l) =>
-      key.parent == null ? l.options : l.sniffProtocols;
-
-  @override
-  String label(SnifferOverrideKey key, AppLocalizations l) => key.label(l);
-
-  @override
-  ConfigLabel? description(SnifferOverrideKey key) => key.description;
-
-  @override
-  OverrideField<Sniffer> fieldOf(SnifferOverrideKey key) => switch (key) {
-    SnifferOverrideKey.enable => ToggleOverrideField(
-      (sniffer) => sniffer.enable,
-      (sniffer, value) => sniffer.copyWith(enable: value),
-    ),
-    SnifferOverrideKey.overrideDest => ToggleOverrideField(
-      (sniffer) => sniffer.overrideDest,
-      (sniffer, value) => sniffer.copyWith(overrideDest: value),
-    ),
-    SnifferOverrideKey.forceDnsMapping => ToggleOverrideField(
-      (sniffer) => sniffer.forceDnsMapping,
-      (sniffer, value) => sniffer.copyWith(forceDnsMapping: value),
-    ),
-    SnifferOverrideKey.parsePureIp => ToggleOverrideField(
-      (sniffer) => sniffer.parsePureIp,
-      (sniffer, value) => sniffer.copyWith(parsePureIp: value),
-    ),
-    SnifferOverrideKey.forceDomain => ListOverrideField(
-      (sniffer) => sniffer.forceDomain,
-      (sniffer, value) => sniffer.copyWith(forceDomain: value),
-      itemMaxLength: TextInputLimits.domain,
-    ),
-    SnifferOverrideKey.skipDomain => ListOverrideField(
-      (sniffer) => sniffer.skipDomain,
-      (sniffer, value) => sniffer.copyWith(skipDomain: value),
-      itemMaxLength: TextInputLimits.domain,
-    ),
-    SnifferOverrideKey.skipSrcAddress => ListOverrideField(
-      (sniffer) => sniffer.skipSrcAddress,
-      (sniffer, value) => sniffer.copyWith(skipSrcAddress: value),
-      itemMaxLength: TextInputLimits.cidr,
-      itemValidator: validateIpMatcher,
-    ),
-    SnifferOverrideKey.skipDstAddress => ListOverrideField(
-      (sniffer) => sniffer.skipDstAddress,
-      (sniffer, value) => sniffer.copyWith(skipDstAddress: value),
-      itemMaxLength: TextInputLimits.cidr,
-      itemValidator: validateIpMatcher,
-    ),
-    SnifferOverrideKey.sniffHttp ||
-    SnifferOverrideKey.sniffTls ||
-    SnifferOverrideKey.sniffQuic => _SniffField(key),
-  };
+  return sniffer.copyWith(sniff: sniff);
 }
 
-class _SniffField extends OverrideField<Sniffer> {
-  const _SniffField(this.overrideKey);
-
-  final SnifferOverrideKey overrideKey;
-
-  @override
-  Widget build(
-    OverrideModel<Sniffer> model, {
-    required ConfigLabel title,
-    required Widget leading,
-  }) {
-    return _SniffItem(model: model, overrideKey: overrideKey, leading: leading);
-  }
-
-  @override
-  Sniffer reset(Sniffer model, Sniffer defaults) =>
-      model.withSniff(overrideKey, defaults.sniffOf(overrideKey));
-}
-
-/// mihomo sniffs a protocol listed without ports on its standard port.
-String _portsText(AppLocalizations l, List<String> ports) {
-  return ports.isEmpty ? l.defaultText : l.itemsCount(ports.length);
-}
-
-class _SniffItem extends ConsumerWidget {
-  const _SniffItem({
-    required this.model,
-    required this.overrideKey,
-    required this.leading,
-  });
-
-  final OverrideModel<Sniffer> model;
-  final SnifferOverrideKey overrideKey;
-  final Widget leading;
+class OverrideSnifferItem extends ConsumerWidget {
+  const OverrideSnifferItem({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final appLocalizations = context.appLocalizations;
-    final ports = ref.watch(
-      model.selectModel((sniffer) => sniffer.sniffOf(overrideKey).ports),
+    return ConfigToggleItem(
+      title: (l) => l.overrideSniffer,
+      subtitle: (l) => l.overrideSnifferDesc,
+      selector: overrideSnifferProvider,
+      onChanged: (ref, value) =>
+          ref.read(overrideSnifferProvider.notifier).value = value,
     );
+  }
+}
+
+class _SniffProtocolItem extends ConsumerWidget {
+  const _SniffProtocolItem(this.protocol);
+
+  final String protocol;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = context.appLocalizations;
+    final config = ref.watch(_snifferSelector((s) => s.sniff[protocol]));
+    final String subtitle;
+    if (config == null) {
+      subtitle = l.disabledText;
+    } else if (config.ports.isEmpty) {
+      subtitle = l.allPorts;
+    } else {
+      subtitle = config.ports.join(', ');
+    }
     return ListItem.open(
-      leading: leading,
-      title: Text(overrideKey.label(appLocalizations)),
-      subtitle: Text(
-        _portsText(appLocalizations, ports),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      widget: _SniffView(model: model, overrideKey: overrideKey),
+      title: Text(protocol),
+      subtitle: Text(subtitle),
+      blur: false,
+      widget: BaseScaffold(title: protocol, body: _SniffProtocolView(protocol)),
     );
   }
 }
 
-/// A protocol without its own `override-destination` follows the sniffer's.
-enum _SniffDestination {
-  inherit(null),
-  enabled(true),
-  disabled(false);
+class _SniffProtocolView extends ConsumerWidget {
+  const _SniffProtocolView(this.protocol);
 
-  const _SniffDestination(this.value);
-
-  final bool? value;
-
-  static _SniffDestination of(bool? value) =>
-      values.firstWhere((item) => item.value == value);
-
-  String label(AppLocalizations l) => switch (this) {
-    _SniffDestination.inherit => l.defaultText,
-    _SniffDestination.enabled => l.enabled,
-    _SniffDestination.disabled => l.disabled,
-  };
-}
-
-class _SniffView extends ConsumerWidget {
-  const _SniffView({required this.model, required this.overrideKey});
-
-  final OverrideModel<Sniffer> model;
-  final SnifferOverrideKey overrideKey;
-
-  ProviderListenable<T> _sniffSelector<T>(
-    T Function(SnifferConfig sniff) select,
-  ) {
-    return model.selectModel((sniffer) => select(sniffer.sniffOf(overrideKey)));
-  }
-
-  ConfigWriter<T> _sniffWriter<T>(
-    SnifferConfig Function(SnifferConfig sniff, T value) update,
-  ) {
-    return model.modelWriter<T>(
-      (sniffer, value) => sniffer.withSniff(
-        overrideKey,
-        update(sniffer.sniffOf(overrideKey), value),
-      ),
-    );
-  }
+  final String protocol;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final appLocalizations = context.appLocalizations;
-    final ports = ref.watch(_sniffSelector((sniff) => sniff.ports));
-    return BaseScaffold(
-      title: overrideKey.label(appLocalizations),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-          top: context.sectionsTopPadding,
-          bottom: 16 + context.bottomInset,
-        ),
-        children: [
-          generateSection(
-            items: [
-              ConfigListEditItem(
-                title: (l) => l.ports,
-                subtitle: (l) => _portsText(l, ports),
-                selector: _sniffSelector((sniff) => sniff.ports),
-                onChanged: _sniffWriter(
-                  (sniff, value) => sniff.copyWith(ports: value),
+    final enabled = ref.watch(
+      _snifferSelector((s) => s.sniff.containsKey(protocol)),
+    );
+    return ListView(
+      padding: sectionPagePadding,
+      children: [
+        generateSectionV3(
+          isFirst: true,
+          items: [
+            ConfigToggleItem(
+              title: (l) => l.status,
+              selector: _snifferSelector((s) => s.sniff.containsKey(protocol)),
+              onChanged: _snifferWriter(
+                (sniffer, value) => _updateProtocol(
+                  sniffer,
+                  protocol,
+                  (_) => value
+                      ? defaultSnifferSniff[protocol] ?? const SnifferConfig()
+                      : null,
                 ),
-                itemMaxLength: TextInputLimits.portRange,
-                itemValidator: validatePortRange,
               ),
-              ConfigOptionsItem<_SniffDestination>(
-                title: (l) => l.overrideDestination,
-                options: _SniffDestination.values,
-                textBuilder: (value) => value.label(appLocalizations),
-                selector: _sniffSelector(
-                  (sniff) => _SniffDestination.of(sniff.overrideDest),
+            ),
+            if (enabled) ...[
+              ConfigListInputItem(
+                title: (l) => l.sniffPorts,
+                subtitle: (l) => l.sniffPortsDesc,
+                selector: _snifferSelector(
+                  (s) => s.sniff[protocol]?.ports ?? const [],
                 ),
-                onChanged: _sniffWriter(
-                  (sniff, value) => sniff.copyWith(overrideDest: value.value),
+                onChanged: _snifferWriter(
+                  (sniffer, value) => _updateProtocol(
+                    sniffer,
+                    protocol,
+                    (config) => config?.copyWith(ports: value),
+                  ),
+                ),
+                itemMaxLength: TextInputLimits.number,
+              ),
+              ConfigOptionsItem<bool?>(
+                title: (l) => l.overrideDestination,
+                options: const [null, true, false],
+                textBuilder: (value) {
+                  final l = context.appLocalizations;
+                  return switch (value) {
+                    null => l.followGlobal,
+                    true => l.enabledText,
+                    false => l.disabledText,
+                  };
+                },
+                selector: _snifferSelector(
+                  (s) => s.sniff[protocol]?.overrideDest,
+                ),
+                onChanged: _snifferWriter(
+                  (sniffer, value) => _updateProtocol(
+                    sniffer,
+                    protocol,
+                    (config) => config?.copyWith(overrideDest: value),
+                  ),
                 ),
               ),
             ],
-          ),
-        ],
-      ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class SnifferListView extends StatelessWidget {
+  const SnifferListView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = context.appLocalizations;
+    return ListView(
+      padding: sectionPagePadding,
+      children: [
+        generateSectionV3(isFirst: true, items: const [OverrideSnifferItem()]),
+        generateSectionV3(
+          title: l.options,
+          items: [
+            _snifferToggle(
+              title: (l) => l.status,
+              subtitle: (l) => l.snifferStatusDesc,
+              select: (s) => s.enable,
+              update: (s, value) => s.copyWith(enable: value),
+            ),
+            _snifferToggle(
+              title: (l) => l.overrideDestination,
+              subtitle: (l) => l.overrideDestinationDesc,
+              select: (s) => s.overrideDest,
+              update: (s, value) => s.copyWith(overrideDest: value),
+            ),
+            _snifferToggle(
+              title: (l) => l.forceDnsMapping,
+              subtitle: (l) => l.forceDnsMappingDesc,
+              select: (s) => s.forceDnsMapping,
+              update: (s, value) => s.copyWith(forceDnsMapping: value),
+            ),
+            _snifferToggle(
+              title: (l) => l.parsePureIp,
+              subtitle: (l) => l.parsePureIpDesc,
+              select: (s) => s.parsePureIp,
+              update: (s, value) => s.copyWith(parsePureIp: value),
+            ),
+          ],
+        ),
+        generateSectionV3(
+          title: l.sniffProtocols,
+          items: [
+            for (final protocol in defaultSnifferSniff.keys)
+              _SniffProtocolItem(protocol),
+          ],
+        ),
+        generateSectionV3(
+          title: l.sniffExceptions,
+          items: [
+            _snifferList(
+              title: (l) => l.forceDomain,
+              subtitle: (l) => l.forceDomainDesc,
+              select: (s) => s.forceDomain,
+              update: (s, value) => s.copyWith(forceDomain: value),
+              itemMaxLength: TextInputLimits.domain,
+            ),
+            _snifferList(
+              title: (l) => l.skipDomain,
+              subtitle: (l) => l.skipDomainDesc,
+              select: (s) => s.skipDomain,
+              update: (s, value) => s.copyWith(skipDomain: value),
+              itemMaxLength: TextInputLimits.domain,
+            ),
+            _snifferList(
+              title: (l) => l.skipSrcAddress,
+              subtitle: (l) => l.skipSrcAddressDesc,
+              select: (s) => s.skipSrcAddress,
+              update: (s, value) => s.copyWith(skipSrcAddress: value),
+              itemMaxLength: TextInputLimits.cidr,
+            ),
+            _snifferList(
+              title: (l) => l.skipDstAddress,
+              subtitle: (l) => l.skipDstAddressDesc,
+              select: (s) => s.skipDstAddress,
+              update: (s, value) => s.copyWith(skipDstAddress: value),
+              itemMaxLength: TextInputLimits.cidr,
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

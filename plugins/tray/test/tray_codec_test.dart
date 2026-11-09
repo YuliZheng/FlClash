@@ -94,42 +94,32 @@ void main() {
     );
   });
 
-  test('detail is serialized only when it has text', () {
+  test('serializes live menu presentation', () {
     final encoded = TrayCodec.encode(
       _spec(
         menu: const [
-          TrayMenuAction(label: 'a', detail: '⌃⌥S'),
-          TrayMenuCheckbox(label: 'b', checked: true, detail: '88 ms'),
-          TrayMenuSubmenu(label: 'c', detail: 'HK', items: []),
-          TrayMenuAction(label: 'd'),
-          TrayMenuAction(label: 'e', detail: ''),
+          TrayMenuAction(
+            key: 'delay-test',
+            label: 'Delay test',
+            keepsMenuOpen: true,
+          ),
+          TrayMenuCheckbox(
+            key: 'delay:proxy',
+            label: 'Proxy',
+            checked: true,
+            sublabel: '42 ms',
+            sublabelStyle: TrayMenuItemSublabelStyle.badge,
+            usesCustomView: true,
+          ),
         ],
       ),
     );
 
-    final items = encoded.menu.cast<Map<String, Object?>>();
-    expect(items.map((item) => item['detail']), [
-      '⌃⌥S',
-      '88 ms',
-      'HK',
-      null,
-      null,
-    ]);
-    expect(items[3].containsKey('detail'), isFalse);
-    expect(items[4].containsKey('detail'), isFalse);
-  });
-
-  test('signature tracks the detail', () {
-    String signatureWith(String? detail) {
-      return TrayCodec.encode(
-        _spec(
-          menu: [TrayMenuAction(label: 'a', detail: detail)],
-        ),
-      ).signature;
-    }
-
-    expect(signatureWith('88 ms'), isNot(signatureWith('90 ms')));
-    expect(signatureWith(null), isNot(signatureWith('88 ms')));
+    expect(encoded.menu[0], containsPair('key', 'delay-test'));
+    expect(encoded.menu[0], containsPair('keepsMenuOpen', true));
+    expect(encoded.menu[1], containsPair('sublabel', '42 ms'));
+    expect(encoded.menu[1], containsPair('sublabelStyle', 'badge'));
+    expect(encoded.menu[1], containsPair('usesCustomView', true));
   });
 
   test('separators serialize without label or state', () {

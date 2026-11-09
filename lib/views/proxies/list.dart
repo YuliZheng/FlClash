@@ -1,83 +1,243 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sliver_tools/sliver_tools.dart';
 
 import 'card.dart';
 import 'common.dart';
 
-const _headerInset = 10.0;
-const _headerButtonInset = 4.0;
-const _groupInset = 16.0;
-const _liftDistance = 16.0;
-const _groupMinWidth = 360.0;
-const _groupMaxColumns = 3;
-const _lastRowGrowth = _headerInset - proxyGridSpacing;
+typedef GroupNameProxiesMap = Map<String, List<Proxy>>;
+
+const _enterStaggerLimit = 8;
+const _enterStaggerStep = Duration(milliseconds: 20);
+const _enterSlideBase = 32.0;
+const _enterSlideStep = 8.0;
+const _listHeaderFadeHeight = 22.0;
+const _listHeaderFadeOverflow = 8.0;
+final _enterWindow = commonDuration + _enterStaggerStep * _enterStaggerLimit;
 
 class ProxiesListView extends ConsumerStatefulWidget {
   const ProxiesListView({super.key});
 
   @override
-  ConsumerState<ProxiesListView> createState() => _ProxiesListViewState();
+  ConsumerState<ProxiesListView> createState() => ProxiesListViewState();
 }
 
-class _ProxiesListViewState extends ConsumerState<ProxiesListView> {
-  late final ScrollController _controller;
-  int _columns = 1;
-  int _groupColumns = 1;
-  double _gap = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = sheetScrollController(context);
-  }
+class ProxiesListViewState extends ConsumerState<ProxiesListView> {
+  final _controller = ScrollController();
+  GroupOffsets _groupOffsets = GroupOffsets.empty;
+  double containerHeight = 0;
+  String? _enterGroupName;
+  Timer? _enterTimer;
+  Object? _lastFocus;
 
   @override
   void dispose() {
+    _stopEnterAnimated();
     _controller.dispose();
     super.dispose();
   }
 
-  void _handleChange(String groupName) {
+  void _startEnterAnimated(String groupName) {
+    _enterTimer?.cancel();
+    _enterGroupName = groupName;
+    _enterTimer = Timer(_enterWindow, _stopEnterAnimated);
+  }
+
+  void _stopEnterAnimated() {
+    _enterTimer?.cancel();
+    _enterTimer = null;
+    _enterGroupName = null;
+  }
+
+  void _handleChange(Set<String> currentUnfoldSet, String groupName) {
     _autoScrollToGroup(groupName);
-    final tempUnfoldSet = Set<String>.from(ref.read(unfoldSetProvider));
-    if (!tempUnfoldSet.remove(groupName)) {
+    final tempUnfoldSet = Set<String>.from(currentUnfoldSet);
+    if (tempUnfoldSet.contains(groupName)) {
+      tempUnfoldSet.remove(groupName);
+      _stopEnterAnimated();
+    } else {
       tempUnfoldSet.add(groupName);
+      _startEnterAnimated(groupName);
     }
     ref
         .read(proxiesActionProvider.notifier)
         .updateCurrentUnfoldSet(tempUnfoldSet);
   }
 
-  GroupOffsets _getGroupOffsets() {
-    final state = ref.read(proxiesListStateProvider);
+  GroupOffsets _getGroupOffsets({
+    required List<Group> groups,
+    required int columns,
+    required Set<String> currentUnfoldSet,
+    required ProxyCardType cardType,
+    required ProxiesListHeaderStyle listHeaderStyle,
+  }) {
     final offsets = <double>[];
-    final rowExtent = getRowExtent(state.proxyCardType);
-    final columnOffsets = List.filled(_groupColumns, 0.0);
-    for (final (index, group) in state.groups.indexed) {
-      final column = index % _groupColumns;
-      offsets.add(columnOffsets[column]);
-      columnOffsets[column] += listHeaderHeight + _gap;
-      if (state.currentUnfoldSet.contains(group.name)) {
-        final rowCount = (group.all.length + _columns - 1) ~/ _columns;
-        columnOffsets[column] += _rowsExtent(rowCount, rowExtent);
+    final rowExtent = getItemHeight(cardType) + 8;
+    var currentOffset = 0.0;
+    for (final group in groups) {
+      offsets.add(currentOffset);
+      currentOffset += getListHeaderHeight(listHeaderStyle) + 8;
+      if (currentUnfoldSet.contains(group.name)) {
+        final rowCount = (group.all.length + columns - 1) ~/ columns;
+        currentOffset += rowCount * rowExtent;
       }
     }
-    return GroupOffsets(state.groups, offsets);
+    return GroupOffsets(groups, offsets);
+  }
+
+  Widget _buildProxyRow({
+    required Group group,
+    required List<Proxy> proxies,
+    required int rowIndex,
+    required int columns,
+    required ProxyCardType cardType,
+  }) {
+    final groupName = group.name;
+    final enterAnimated = _enterGroupName == groupName;
+    final children = proxies.indexed
+        .map<Widget>((entry) {
+          final (columnIndex, proxy) = entry;
+          final card = SizedBox(
+            height: getItemHeight(cardType),
+            child: ProxyCard(
+              testUrl: group.testUrl,
+              type: cardType,
+              groupType: group.type,
+              key: ValueKey('$groupName.${proxy.name}'),
+              proxy: proxy,
+              groupName: groupName,
+            ),
+          );
+          if (!enterAnimated) {
+            return Flexible(child: card);
+          }
+          final stagger = min(
+            rowIndex * columns + columnIndex,
+            _enterStaggerLimit,
+          );
+          return Flexible(
+            child: FadeSlideEnterBox(
+              delay: _enterStaggerStep * stagger,
+              distance: _enterSlideBase + _enterSlideStep * stagger,
+              child: card,
+            ),
+          );
+        })
+        .fill(columns, filler: (_) => const Flexible(child: SizedBox()))
+        .separated(const SizedBox(width: 8));
+    return Padding(
+      padding: const EdgeInsets.only(left: 16, right: 16, top: 8),
+      child: Row(children: children.toList()),
+    );
+  }
+
+  Widget _buildGroup(
+    BuildContext context, {
+    required Group group,
+    required Set<String> currentUnfoldSet,
+    required int columns,
+    required ProxyCardType cardType,
+    required ProxiesListHeaderStyle listHeaderStyle,
+    required bool animate,
+  }) {
+    final groupName = group.name;
+    final isExpand = currentUnfoldSet.contains(groupName);
+    final headerHeight = getListHeaderHeight(listHeaderStyle);
+    final backgroundHeight = headerHeight + _listHeaderFadeOverflow;
+    final fadeStart = 1 - _listHeaderFadeHeight / backgroundHeight;
+    final surface = context.colorScheme.surface;
+    final rowCount = (group.all.length + columns - 1) ~/ columns;
+    final contentExtent = rowCount * (getItemHeight(cardType) + 8);
+    final groupStart = _groupOffsets.offsetOf(groupName);
+    final animationMilliseconds = 100 + contentExtent * 0.25;
+    final animationDuration = Duration(
+      milliseconds: min(animationMilliseconds, isExpand ? 120 : 250).round(),
+    );
+    final rows = isExpand
+        ? group.all.chunks(columns).toList()
+        : const <List<Proxy>>[];
+    final proxyList = SliverFixedExtentList(
+      itemExtent: getItemHeight(cardType) + 8,
+      delegate: SliverChildBuilderDelegate(
+        (_, index) => _buildProxyRow(
+          group: group,
+          proxies: rows[index],
+          rowIndex: index,
+          columns: columns,
+          cardType: cardType,
+        ),
+        childCount: rows.length,
+      ),
+    );
+    return SliverMainAxisGroup(
+      slivers: [
+        PinnedHeaderSliver(
+          child: Container(
+            key: ValueKey('$groupName.headerFade'),
+            height: backgroundHeight,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [surface, surface, surface.opacity60, surface.opacity0],
+                stops: [0, fadeStart, fadeStart, 1],
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 16, right: 16, top: 8),
+              child: SizedBox(
+                height: headerHeight,
+                child: _ScrollRangeBuilder(
+                  controller: _controller,
+                  start: groupStart,
+                  end: isExpand ? groupStart + contentExtent : groupStart,
+                  builder: (floating) => ListHeader(
+                    enterAnimated: false,
+                    floating: floating,
+                    onScrollToSelected: (groupName) {
+                      _scrollToGroupSelected(groupName, columns);
+                    },
+                    key: ValueKey(groupName),
+                    listHeaderStyle: listHeaderStyle,
+                    isExpand: isExpand,
+                    group: group,
+                    onChange: (groupName) {
+                      _handleChange(currentUnfoldSet, groupName);
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (animate)
+          SliverAnimatedPaintExtent(
+            duration: animationDuration,
+            curve: Curves.easeInOutCubic,
+            child: proxyList,
+          )
+        else
+          proxyList,
+      ],
+    );
   }
 
   double _getGroupOffset(String groupName) {
-    if (!_controller.hasClients || _controller.position.maxScrollExtent == 0) {
+    if (!_controller.hasClients ||
+        _controller.position.maxScrollExtent == 0 ||
+        _groupOffsets.isEmpty) {
       return 0;
     }
-    return _getGroupOffsets().offsetOf(groupName);
+    return _groupOffsets.offsetOf(groupName);
   }
 
   void _scrollToMakeVisibleWithPadding({
@@ -123,36 +283,57 @@ class _ProxiesListViewState extends ConsumerState<ProxiesListView> {
     final pixels = _controller.position.pixels;
     final offset = _getGroupOffset(groupName);
     _scrollToMakeVisibleWithPadding(
-      containerHeight: max(
-        _controller.position.viewportDimension - context.contentTopPadding,
-        0,
-      ),
+      containerHeight: containerHeight,
       pixels: pixels,
       start: offset,
-      end: offset + listHeaderHeight,
+      end:
+          offset +
+          getListHeaderHeight(
+            ref.read(proxiesStyleSettingProvider).listHeaderStyle,
+          ),
     );
   }
 
-  void _scrollToGroupSelected(String groupName) {
-    final cardType = ref.read(proxiesListStateProvider).proxyCardType;
-    final proxies = ref
-        .read(proxiesListStateProvider)
-        .groups
-        .getGroup(groupName)
-        ?.all;
-    if (proxies == null) {
-      return;
-    }
-    final rowOffset = selectedRowOffset(
-      proxies: proxies,
-      selectedProxyName: ref.read(selectedProxyNameProvider(groupName)),
-      columns: _columns,
-      rowExtent: getRowExtent(cardType),
+  void _scrollToGroupSelected(String groupName, int columns) {
+    final currentInitOffset = _getGroupOffset(groupName);
+    final proxies = _groupOffsets.groupOf(groupName)?.all;
+    _jumpTo(
+      currentInitOffset +
+          8 +
+          getScrollToSelectedOffset(
+            ref: ref,
+            groupName: groupName,
+            proxies: proxies ?? [],
+            columns: columns,
+          ),
     );
-    if (rowOffset == null) {
-      return;
+  }
+
+  void _jumpTo(double offset) {
+    if (mounted && _controller.hasClients) {
+      _controller.animateTo(
+        offset.clamp(
+          _controller.position.minScrollExtent,
+          _controller.position.maxScrollExtent,
+        ),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeIn,
+      );
     }
-    animateScrollTo(_controller, _getGroupOffset(groupName) + rowOffset);
+  }
+
+  Future<void> delayTestUnfoldedGroups() async {
+    final state = ref.read(proxiesListStateProvider);
+    final expandedGroups = state.groups.where(
+      (group) => state.currentUnfoldSet.contains(group.name),
+    );
+    await Future.wait(
+      expandedGroups.map(
+        (group) => ref
+            .read(proxiesActionProvider.notifier)
+            .delayTest(group.all, group.testUrl),
+      ),
+    );
   }
 
   @override
@@ -160,108 +341,83 @@ class _ProxiesListViewState extends ConsumerState<ProxiesListView> {
     final appLocalizations = context.appLocalizations;
     return Consumer(
       builder: (_, ref, _) {
-        final groups = ref.watch(
-          proxiesListStateProvider.select((state) => state.groups),
-        );
-        final cardType = ref.watch(
-          proxiesListStateProvider.select((state) => state.proxyCardType),
-        );
+        final state = ref.watch(proxiesListStateProvider);
+        final focus = ref.watch(proxyFocusProvider);
+        final focusChanged = focus != _lastFocus;
         ref.watch(themeSettingProvider.select((state) => state.textScale));
-        final viewMode = ref.watch(viewModeProvider);
         final proxiesLayout = ref.watch(
           proxiesStyleSettingProvider.select((state) => state.layout),
         );
-        final isSearching = ref.watch(
-          queryProvider(
-            QueryTag.proxies,
-          ).select((query) => SearchQuery(query).isNotEmpty),
+        final listHeaderStyle = ref.watch(
+          proxiesStyleSettingProvider.select((state) => state.listHeaderStyle),
         );
         return NullStatusSwitcher(
-          isEmpty: groups.isEmpty,
-          isSearching: isSearching,
+          isEmpty: state.groups.isEmpty,
           nullStatus: NullStatus(
             illustration: NullStatusIllustration.proxies,
             label: appLocalizations.nullTip(appLocalizations.proxies),
           ),
-          child: WidthBuilder(
-            builder: (_, maxWidth) {
-              final gap = cardSpacingOf(context, viewMode);
-              final width = max(maxWidth - _groupInset * 2, 0.0);
-              final groupColumns = viewMode == ViewMode.mobile
-                  ? 1
-                  : ((width + gap) / (_groupMinWidth + gap)).floor().clamp(
-                      1,
-                      _groupMaxColumns,
-                    );
-              final groupWidth =
-                  (width - gap * (groupColumns - 1)) / groupColumns;
+          child: LayoutBuilder(
+            builder: (_, constraints) {
               final columns = getProxiesColumns(
-                max(groupWidth - _headerInset * 2, 0),
+                max(constraints.maxWidth - 32, 0),
                 proxiesLayout,
               );
-              _columns = columns;
-              _groupColumns = groupColumns;
-              _gap = gap;
-              Widget buildGroup(Group group) => _GroupSliver(
-                key: _GroupSliverKey(group.name),
-                group: group,
+              _groupOffsets = _getGroupOffsets(
+                groups: state.groups,
+                currentUnfoldSet: state.currentUnfoldSet,
                 columns: columns,
-                cardType: cardType,
-                gap: gap,
-                onChange: _handleChange,
-                onScrollToSelected: _scrollToGroupSelected,
+                cardType: state.proxyCardType,
+                listHeaderStyle: listHeaderStyle,
               );
+              containerHeight = max(constraints.maxHeight - 16, 0);
+              if (focusChanged) {
+                _lastFocus = focus;
+                if (focus != null) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted || ref.read(proxyFocusProvider) != focus) {
+                      return;
+                    }
+                    final group = _groupOffsets.groupOf(focus.groupName);
+                    if (group == null) return;
+                    final index = group.all.indexWhere(
+                      (proxy) => proxy.name == focus.proxyName,
+                    );
+                    final row = max(index, 0) ~/ columns;
+                    _jumpTo(
+                      _groupOffsets.offsetOf(group.name) +
+                          row * (getItemHeight(state.proxyCardType) + 8),
+                    );
+                  });
+                }
+              }
               return CommonScrollBar(
                 controller: _controller,
                 thumbVisibility: true,
-                child: CustomScrollView(
-                  key: proxiesListStoreKey,
-                  controller: _controller,
-                  slivers: [
-                    PinnedHeaderSliver(
-                      child: SizedBox(height: context.contentTopPadding),
-                    ),
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: _groupInset,
+                trackVisibility: true,
+                child: ScrollConfiguration(
+                  behavior: const HiddenBarScrollBehavior(),
+                  child: CustomScrollView(
+                    key: proxiesListStoreKey,
+                    controller: _controller,
+                    slivers: [
+                      for (final group in state.groups)
+                        _buildGroup(
+                          context,
+                          group: group,
+                          currentUnfoldSet: state.currentUnfoldSet,
+                          columns: columns,
+                          cardType: state.proxyCardType,
+                          listHeaderStyle: listHeaderStyle,
+                          animate: !focusChanged,
+                        ),
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: 16 + BottomInsetScope.of(context),
+                        ),
                       ),
-                      sliver: groupColumns == 1
-                          ? SliverMainAxisGroup(
-                              slivers: groups.map(buildGroup).toList(),
-                            )
-                          : SliverCrossAxisGroup(
-                              slivers: [
-                                for (
-                                  var column = 0;
-                                  column < groupColumns;
-                                  column++
-                                ) ...[
-                                  if (column > 0)
-                                    SliverConstrainedCrossAxis(
-                                      maxExtent: gap,
-                                      sliver: const SliverToBoxAdapter(),
-                                    ),
-                                  SliverCrossAxisExpanded(
-                                    flex: 1,
-                                    sliver: SliverMainAxisGroup(
-                                      slivers: [
-                                        for (
-                                          var index = column;
-                                          index < groups.length;
-                                          index += groupColumns
-                                        )
-                                          buildGroup(groups[index]),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                    ),
-                    SliverToBoxAdapter(
-                      child: SizedBox(height: 16 + context.bottomInset),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             },
@@ -272,436 +428,254 @@ class _ProxiesListViewState extends ConsumerState<ProxiesListView> {
   }
 }
 
-double _rowsExtent(int rowCount, double rowExtent) =>
-    rowCount == 0 ? 0 : rowCount * rowExtent + _lastRowGrowth;
-
-class _GroupSliverKey extends ValueKey<String> {
-  const _GroupSliverKey(super.value);
-}
-
-/// Watches only its own group's fold state, so folding one group leaves the
-/// cards of every other group untouched, and keeps its rows sliver while the
-/// inputs that shape it are equal.
-class _GroupSliver extends ConsumerStatefulWidget {
-  const _GroupSliver({
-    super.key,
-    required this.group,
-    required this.columns,
-    required this.cardType,
-    required this.gap,
-    required this.onChange,
-    required this.onScrollToSelected,
+class _ScrollRangeBuilder extends StatefulWidget {
+  const _ScrollRangeBuilder({
+    required this.controller,
+    required this.start,
+    required this.end,
+    required this.builder,
   });
 
-  final Group group;
-  final int columns;
-  final ProxyCardType cardType;
-  final double gap;
-  final void Function(String groupName) onChange;
-  final void Function(String groupName) onScrollToSelected;
+  final ScrollController controller;
+  final double start;
+  final double end;
+  final Widget Function(bool inRange) builder;
 
   @override
-  ConsumerState<_GroupSliver> createState() => _GroupSliverState();
+  State<_ScrollRangeBuilder> createState() => _ScrollRangeBuilderState();
 }
 
-class _GroupSliverState extends ConsumerState<_GroupSliver>
-    with SingleTickerProviderStateMixin {
-  Widget? _rows;
-  double _rowExtent = 0;
-  late final _controller = AnimationController(
-    vsync: this,
-    value: ref.read(unfoldSetProvider).contains(widget.group.name) ? 1 : 0,
-  );
-  late final _unfold = UnfoldEntryTransition.curveOf(_controller);
+class _ScrollRangeBuilderState extends State<_ScrollRangeBuilder> {
+  late bool _inRange = _computeInRange();
+
+  bool _computeInRange() {
+    if (!widget.controller.hasClients) return false;
+    final pixels = widget.controller.offset;
+    return pixels > widget.start && pixels <= widget.end;
+  }
+
+  void _handleScroll() {
+    final inRange = _computeInRange();
+    if (inRange != _inRange) {
+      setState(() => _inRange = inRange);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _controller.addStatusListener((_) => setState(() {}));
-    ref.listenManual(
-      unfoldSetProvider.select((state) => state.contains(widget.group.name)),
-      (_, isExpand) => _handleUnfold(isExpand),
-    );
+    widget.controller.addListener(_handleScroll);
+  }
+
+  @override
+  void didUpdateWidget(_ScrollRangeBuilder oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleScroll);
+      widget.controller.addListener(_handleScroll);
+    }
+    _inRange = _computeInRange();
   }
 
   @override
   void dispose() {
-    _unfold.dispose();
-    _controller.dispose();
+    widget.controller.removeListener(_handleScroll);
     super.dispose();
   }
 
-  void _handleUnfold(bool isExpand) {
-    _controller.duration = context.motionDuration(
-      UnfoldEntryTransition.duration,
-    );
-    isExpand ? _controller.forward() : _controller.reverse();
-  }
-
   @override
-  void didUpdateWidget(_GroupSliver oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.group != oldWidget.group ||
-        widget.columns != oldWidget.columns ||
-        widget.cardType != oldWidget.cardType) {
-      _rows = null;
-    }
-  }
-
-  Widget _buildRow(BuildContext context, List<Proxy> proxies) {
-    final group = widget.group;
-    final cardType = widget.cardType;
-    final groupName = group.name;
-    final children = proxies
-        .map<Widget>(
-          (proxy) => Flexible(
-            child: SizedBox(
-              height: getItemHeight(cardType),
-              child: ProxyCard(
-                testUrl: group.testUrl,
-                type: cardType,
-                groupType: group.type,
-                key: ValueKey('$groupName.${proxy.name}'),
-                proxy: proxy,
-                groupName: groupName,
-              ),
-            ),
-          ),
-        )
-        .fill(widget.columns, filler: (_) => const Flexible(child: SizedBox()))
-        .separated(const SizedBox(width: 8));
-    return SurfaceScope(
-      level: context.raisedSurfaceLevel,
-      child: Padding(
-        padding: const EdgeInsets.only(
-          left: _headerInset,
-          right: _headerInset,
-          bottom: proxyGridSpacing,
-        ),
-        child: Row(children: children.toList()),
-      ),
-    );
-  }
-
-  Widget _buildRows(double extent) {
-    final rows = widget.group.all.chunks(widget.columns).toList();
-    return SliverFixedExtentList(
-      itemExtent: extent,
-      delegate: SliverChildBuilderDelegate(
-        (context, index) => _buildRow(context, rows[index]),
-        childCount: rows.length,
-        addAutomaticKeepAlives: false,
-      ),
-    );
-  }
-
-  /// The card reaches up behind the header's rounded bottom corners, so the
-  /// two read as one while the rows unfold or fold.
-  Widget _buildUnfoldingRows(double extent, ShapeDecoration decoration) {
-    final rows = widget.group.all.chunks(widget.columns).toList();
-    final visible = min(
-      rows.length.toDouble(),
-      MediaQuery.sizeOf(context).height / extent,
-    );
-    final count = min(rows.length, visible.floor() + 1);
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Positioned(
-          top: -AppCorner.xl.ap(context),
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: DecoratedBox(decoration: decoration),
-        ),
-        SizeTransition(
-          sizeFactor: _unfold,
-          alignment: Alignment.topCenter,
-          child: Column(
-            children: [
-              for (var index = 0; index < count; index++)
-                UnfoldEntryTransition(
-                  animation: _unfold,
-                  index: index,
-                  visibleCount: visible,
-                  child: SizedBox(
-                    height: extent,
-                    child: _buildRow(context, rows[index]),
-                  ),
-                ),
-              if (count == rows.length) const SizedBox(height: _lastRowGrowth),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final groupName = widget.group.name;
-    final isExpand = ref.watch(
-      unfoldSetProvider.select((state) => state.contains(groupName)),
-    );
-    final unfolded = _controller.isCompleted;
-    Widget? rows;
-    if (!_controller.isDismissed && widget.group.all.isNotEmpty) {
-      final extent = getRowExtent(widget.cardType);
-      final decoration = ShapeDecoration(
-        color: context.raisedSurfaceLevel.colorOf(context.colorScheme),
-        shape: AppShape.vertical(
-          top: AppCorner.none,
-          bottom: AppCorner.xl.ap(context),
-        ),
-      );
-      if (!unfolded) {
-        _rows = null;
-        rows = SliverToBoxAdapter(
-          child: _buildUnfoldingRows(extent, decoration),
-        );
-      } else {
-        if (_rows == null || _rowExtent != extent) {
-          _rows = _buildRows(extent);
-          _rowExtent = extent;
-        }
-        rows = DecoratedSliver(
-          decoration: decoration,
-          sliver: SliverMainAxisGroup(
-            slivers: [
-              _rows!,
-              const SliverToBoxAdapter(child: SizedBox(height: _lastRowGrowth)),
-            ],
-          ),
-        );
-      }
-    } else {
-      _rows = null;
-    }
-    Widget buildHeader({double floating = 0, double lift = 0}) => SizedBox(
-      height: listHeaderHeight,
-      child: ListHeader(
-        enterAnimated: false,
-        floating: floating,
-        lift: lift,
-        onScrollToSelected: widget.onScrollToSelected,
-        key: ValueKey(groupName),
-        isExpand: isExpand,
-        unfolded: unfolded,
-        group: widget.group,
-        onChange: widget.onChange,
-      ),
-    );
-    return SliverPadding(
-      padding: EdgeInsets.only(bottom: widget.gap),
-      sliver: SliverMainAxisGroup(
-        slivers: [_buildPinnedHeader(isExpand, buildHeader), ?rows],
-      ),
-    );
-  }
-
-  /// Rounds the header and lifts it as its own rows scroll under it, and lets
-  /// the shadow go before the end of the group pushes it out. The page color
-  /// behind its upper half hides the rows that went under it, which would
-  /// otherwise show around its top corners and above it. Every header is laid
-  /// out on every pass, so one beyond the cache area builds nothing.
-  Widget _buildPinnedHeader(
-    bool isExpand,
-    Widget Function({double floating, double lift}) buildHeader,
-  ) {
-    final columns = widget.columns;
-    final rowCount = (widget.group.all.length + columns - 1) ~/ columns;
-    final rowsExtent = isExpand ? _rowsExtent(rowCount, _rowExtent) : 0.0;
-    final groupExtent =
-        listHeaderHeight +
-        (_controller.isDismissed
-            ? 0.0
-            : _rowsExtent(rowCount, getRowExtent(widget.cardType)));
-    (double, double, double, Color)? headerState;
-    Widget? header;
-    return SliverLayoutBuilder(
-      builder: (context, constraints) {
-        final beyondCache =
-            constraints.remainingCacheExtent <= 0 ||
-            constraints.scrollOffset + constraints.cacheOrigin >= groupExtent;
-        final under = isExpand
-            ? constraints.scrollOffset + constraints.overlap
-            : 0.0;
-        final state = beyondCache
-            ? null
-            : (
-                (under / _liftDistance).clamp(0.0, 1.0),
-                (min(under, rowsExtent - under) / _liftDistance).clamp(
-                  0.0,
-                  1.0,
-                ),
-                isExpand ? constraints.overlap : 0.0,
-                context.surfaceLevel.colorOf(context.colorScheme),
-              );
-        if (header != null && state == headerState) {
-          return header!;
-        }
-        headerState = state;
-        if (state == null) {
-          return header = PinnedHeaderSliver(
-            child: SizedBox(height: listHeaderHeight),
-          );
-        }
-        final (floating, lift, cover, pageColor) = state;
-        return header = PinnedHeaderSliver(
-          child: RepaintBoundary(
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Positioned(
-                  top: -cover,
-                  left: 0,
-                  right: 0,
-                  height: cover + listHeaderHeight / 2,
-                  child: ColoredBox(color: pageColor),
-                ),
-                buildHeader(floating: floating, lift: lift),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => widget.builder(_inRange);
 }
 
-class ListHeader extends ConsumerWidget {
+class ListHeader extends ConsumerStatefulWidget {
   final Group group;
 
   final Function(String groupName) onChange;
   final Function(String groupName) onScrollToSelected;
   final bool isExpand;
 
-  /// Whether the rows have settled under the header, squaring its bottom.
-  final bool unfolded;
-
   final bool enterAnimated;
-
-  /// How far the group's own rows have scrolled under the pinned header, as a
-  /// fraction of the distance that rounds its bottom corners.
-  final double floating;
-
-  /// The shadow that lifts the header off the rows under it.
-  final double lift;
+  final bool floating;
+  final ProxiesListHeaderStyle listHeaderStyle;
 
   const ListHeader({
     super.key,
     this.enterAnimated = true,
-    this.floating = 0,
-    this.lift = 0,
+    this.floating = false,
+    this.listHeaderStyle = ProxiesListHeaderStyle.loose,
     required this.group,
     required this.onChange,
     required this.onScrollToSelected,
     required this.isExpand,
-    required this.unfolded,
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final groupName = group.name;
-    final isDelayTesting = ref.watch(
-      delayTestingGroupsProvider.select((state) => state.contains(groupName)),
+  ConsumerState<ListHeader> createState() => _ListHeaderState();
+}
+
+class _ListHeaderState extends ConsumerState<ListHeader> {
+  var isLock = false;
+
+  String get icon => widget.group.icon;
+
+  String get emojiIcon => getFirstEmoji(groupName);
+
+  String get groupName => widget.group.name;
+
+  String get groupType => widget.group.type.name;
+
+  bool get isExpand => widget.isExpand;
+
+  EdgeInsets get _contentPadding => switch (widget.listHeaderStyle) {
+    ProxiesListHeaderStyle.loose => const EdgeInsets.symmetric(
+      horizontal: 16,
+      vertical: 12,
+    ),
+    ProxiesListHeaderStyle.standard => const EdgeInsets.symmetric(
+      horizontal: 12,
+      vertical: 8,
+    ),
+    ProxiesListHeaderStyle.tight => const EdgeInsets.symmetric(
+      horizontal: 8,
+      vertical: 6,
+    ),
+  };
+
+  Future<void> _delayTest() async {
+    if (isLock) return;
+    isLock = true;
+    try {
+      await ref
+          .read(proxiesActionProvider.notifier)
+          .delayTest(widget.group.all, widget.group.testUrl);
+    } finally {
+      isLock = false;
+    }
+  }
+
+  void _handleChange(String groupName) {
+    widget.onChange(groupName);
+  }
+
+  OutlinedBorder get _shape =>
+      widget.listHeaderStyle == ProxiesListHeaderStyle.tight
+      ? RoundedRectangleBorder(borderRadius: AppRadius.all(AppCorner.xl.ap))
+      : AppShape.all(AppCorner.xl.ap);
+
+  @override
+  Widget build(BuildContext context) {
+    final shadowColor = context.colorScheme.shadow;
+    return AnimatedContainer(
+      duration: commonDuration,
+      curve: Curves.easeOutCubic,
+      decoration: ShapeDecoration(
+        shape: _shape,
+        shadows: [
+          BoxShadow(
+            color: widget.floating
+                ? shadowColor.opacity15
+                : shadowColor.opacity0,
+            blurRadius: 2,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: _buildCard(),
     );
-    final colorScheme = context.colorScheme;
-    final level = floating > 0
-        ? SurfaceLevel.floatingOf(colorScheme)
-        : context.raisedSurfaceLevel;
-    final radius = AppCorner.xl.ap(context);
-    final card = CommonCard(
+  }
+
+  Widget _buildCard() {
+    return CommonCard(
       enterActionsOnRight: true,
-      enterAnimated: enterAnimated,
-      key: key,
-      radius: radius - _headerButtonInset,
+      enterAnimated: widget.enterAnimated,
+      key: widget.key,
+      shape: _shape,
+      type: CommonCardType.filled,
       child: Padding(
-        padding: const EdgeInsets.all(_headerInset - _headerButtonInset),
+        padding: _contentPadding,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Flexible(
               child: Row(
                 children: [
-                  _GroupIcon(src: group.icon, name: groupName),
-                  Flexible(child: _GroupSummary(groupName: groupName)),
+                  _GroupIcon(src: icon, groupName: groupName),
+                  Flexible(
+                    child: _GroupSummary(
+                      groupName: groupName,
+                      groupType: groupType,
+                      configuredIcon: icon,
+                      listHeaderStyle: widget.listHeaderStyle,
+                    ),
+                  ),
                 ],
               ),
             ),
             _GroupActions(
               isExpand: isExpand,
-              isDelayTesting: isDelayTesting,
-              groupType: group.type.name,
               onScrollToSelected: () {
-                onScrollToSelected(groupName);
+                widget.onScrollToSelected(groupName);
               },
-              onDelayTest: () {
-                ref
-                    .read(proxiesActionProvider.notifier)
-                    .delayTestPageGroup(groupName);
-              },
+              onDelayTest: _delayTest,
               onToggle: () {
-                onChange(groupName);
+                _handleChange(groupName);
               },
             ),
           ],
         ),
       ),
       onPressed: () {
-        onChange(groupName);
+        _handleChange(groupName);
       },
-    );
-    return DecoratedBox(
-      decoration: ShapeDecoration(
-        color: level.colorOf(colorScheme),
-        shape: AppShape.vertical(
-          top: radius,
-          bottom: unfolded ? radius * floating : radius,
-        ),
-        shadows: lift == 0 ? null : _floatingShadows(colorScheme, lift),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(_headerButtonInset),
-        child: SurfaceScope(
-          // CommonCard fills one level above its scope.
-          level: SurfaceLevel.values[level.index - 1],
-          child: card,
-        ),
-      ),
+      onLongPress: () async {
+        await ref
+            .read(proxiesActionProvider.notifier)
+            .resetProxySelection(groupName);
+      },
     );
   }
 }
 
-List<BoxShadow> _floatingShadows(ColorScheme colorScheme, double lift) {
-  final strength = colorScheme.brightness == Brightness.dark ? 3.0 : 1.0;
-  return [
-    BoxShadow(
-      color: colorScheme.shadow.withValues(alpha: 0.08 * strength * lift),
-      blurRadius: 16,
-      offset: const Offset(0, 4),
-    ),
-    BoxShadow(
-      color: colorScheme.shadow.withValues(alpha: 0.04 * strength * lift),
-      blurRadius: 3,
-      offset: const Offset(0, 1),
-    ),
-  ];
-}
-
 class _GroupIcon extends ConsumerWidget {
-  const _GroupIcon({required this.src, required this.name});
+  const _GroupIcon({required this.src, required this.groupName});
 
   final String src;
-  final String name;
+  final String groupName;
+
+  bool _shouldUseEmoji(ProxiesIconSource source) {
+    final emoji = getFirstEmoji(groupName);
+    return switch (source) {
+      ProxiesIconSource.standard => src.isEmpty && emoji.isNotEmpty,
+      ProxiesIconSource.config => false,
+      ProxiesIconSource.emoji => emoji.isNotEmpty,
+    };
+  }
+
+  Widget _buildIconContent(double size, ProxiesIconSource source) {
+    if (_shouldUseEmoji(source)) {
+      return EmojiText(
+        getFirstEmoji(groupName),
+        style: TextStyle(fontSize: size * 0.75, height: 1.2),
+      );
+    }
+    return IconTheme.merge(
+      data: IconThemeData(size: size),
+      child: CommonTargetIcon(
+        src: source == ProxiesIconSource.emoji ? '' : src,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final iconStyle = ref.watch(
       proxiesStyleSettingProvider.select((state) => state.iconStyle),
     );
+    final iconSource = ref.watch(
+      proxiesStyleSettingProvider.select((state) => state.iconSource),
+    );
     return switch (iconStyle) {
-      ProxiesIconStyle.filled => LayoutBuilder(
+      ProxiesIconStyle.standard => LayoutBuilder(
         builder: (_, constraints) {
           return Container(
             margin: const EdgeInsets.only(right: 12),
@@ -711,78 +685,144 @@ class _GroupIcon extends ConsumerWidget {
                 height: constraints.maxHeight,
                 width: constraints.maxWidth,
                 alignment: Alignment.center,
-                padding: EdgeInsets.all(6.ap(context)),
+                padding: EdgeInsets.all(6.ap),
                 decoration: ShapeDecoration(
-                  color: context.raisedSurfaceLevel.colorOf(
-                    context.colorScheme,
-                  ),
-                  shape: AppShape.all(AppCorner.xl.ap(context) - _headerInset),
+                  color: context.colorScheme.secondaryContainer,
+                  shape: AppShape.md,
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: IconTheme.merge(
-                  data: IconThemeData(
-                    size: constraints.maxHeight - 12.ap(context),
-                    color: context.colorScheme.onSurfaceVariant,
-                  ),
-                  child: CommonTargetIcon(
-                    src: src,
-                    fallback: GroupMonogram(name),
-                  ),
+                child: _buildIconContent(
+                  constraints.maxHeight - 12.ap,
+                  iconSource,
                 ),
               ),
             ),
           );
         },
       ),
-      ProxiesIconStyle.plain => Container(
+      ProxiesIconStyle.icon => Container(
         margin: const EdgeInsets.only(left: 2, right: 10),
         child: LayoutBuilder(
           builder: (_, constraints) {
-            return IconTheme.merge(
-              data: IconThemeData(
-                size: constraints.maxHeight,
-                color: context.colorScheme.primary,
-              ),
-              child: CommonTargetIcon(src: src, fallback: GroupMonogram(name)),
-            );
+            return _buildIconContent(constraints.maxHeight - 16.ap, iconSource);
           },
         ),
       ),
-      // Lines the title up with the proxy card names below, which sit at the
-      // row inset plus the card padding.
-      ProxiesIconStyle.hidden => const SizedBox(width: 4),
+      ProxiesIconStyle.none => Container(),
     };
   }
 }
 
 class _GroupSummary extends StatelessWidget {
-  const _GroupSummary({required this.groupName});
+  const _GroupSummary({
+    required this.groupName,
+    required this.groupType,
+    required this.configuredIcon,
+    required this.listHeaderStyle,
+  });
 
   final String groupName;
+  final String groupType;
+  final String configuredIcon;
+  final ProxiesListHeaderStyle listHeaderStyle;
+
+  TextStyle? _titleStyle(BuildContext context) =>
+      listHeaderStyle == ProxiesListHeaderStyle.loose
+      ? context.textTheme.titleMedium
+      : context.textTheme.titleSmall;
+
+  TextStyle? _labelStyle(BuildContext context) =>
+      listHeaderStyle == ProxiesListHeaderStyle.loose
+      ? context.textTheme.labelMedium
+      : context.textTheme.labelSmall;
 
   @override
   Widget build(BuildContext context) {
+    final info = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(groupType, style: _labelStyle(context)?.toLight),
+        Flexible(
+          child: _SelectedProxyName(
+            groupName: groupName,
+            prefix: ' · ',
+            style: _labelStyle(context)?.toLight,
+          ),
+        ),
+      ],
+    );
+    final title = _GroupTitle(
+      groupName: groupName,
+      configuredIcon: configuredIcon,
+      style: _titleStyle(context),
+    );
+    if (listHeaderStyle == ProxiesListHeaderStyle.tight) {
+      return Row(
+        children: [
+          Flexible(flex: 2, child: title),
+          const SizedBox(width: 8),
+          Flexible(flex: 3, child: info),
+        ],
+      );
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        EmojiText(
-          groupName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppTextStyle.callout.of(context, emphasized: true),
-        ),
-        const SizedBox(height: 2),
-        Flexible(flex: 1, child: _SelectedProxyName(groupName: groupName)),
+        title,
+        const SizedBox(height: 4),
+        Flexible(child: info),
       ],
     );
   }
 }
 
-class _SelectedProxyName extends ConsumerWidget {
-  const _SelectedProxyName({required this.groupName});
+class _GroupTitle extends ConsumerWidget {
+  const _GroupTitle({
+    required this.groupName,
+    required this.configuredIcon,
+    required this.style,
+  });
 
   final String groupName;
+  final String configuredIcon;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final props = ref.watch(
+      proxiesStyleSettingProvider.select(
+        (state) => (state.iconStyle, state.iconSource),
+      ),
+    );
+    final emoji = getFirstEmoji(groupName);
+    final usesEmoji =
+        props.$1 != ProxiesIconStyle.none &&
+        emoji.isNotEmpty &&
+        (props.$2 == ProxiesIconSource.emoji ||
+            (props.$2 == ProxiesIconSource.standard && configuredIcon.isEmpty));
+    final title = usesEmoji
+        ? removeLeadingEmoji(groupName).takeFirstValid([groupName])
+        : groupName;
+    return EmojiText(
+      title,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: style,
+    );
+  }
+}
+
+class _SelectedProxyName extends ConsumerWidget {
+  const _SelectedProxyName({
+    required this.groupName,
+    this.prefix = '',
+    this.style,
+  });
+
+  final String groupName;
+  final String prefix;
+  final TextStyle? style;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -793,10 +833,10 @@ class _SelectedProxyName extends ConsumerWidget {
       return const SizedBox.shrink();
     }
     return EmojiText(
-      proxyName,
+      '$prefix$proxyName',
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: AppTextStyle.caption1.of(context, emphasized: true).toLight,
+      style: style ?? context.textTheme.labelSmall?.toLight,
     );
   }
 }
@@ -804,64 +844,59 @@ class _SelectedProxyName extends ConsumerWidget {
 class _GroupActions extends StatelessWidget {
   const _GroupActions({
     required this.isExpand,
-    required this.isDelayTesting,
-    required this.groupType,
     required this.onScrollToSelected,
     required this.onDelayTest,
     required this.onToggle,
   });
 
+  static const _shrinkWrap = ButtonStyle(
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
   final bool isExpand;
-  final bool isDelayTesting;
-  final String groupType;
   final VoidCallback onScrollToSelected;
   final VoidCallback onDelayTest;
   final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) {
-    return TonalButtonTheme(
-      size: TonalButtonSize.compact,
-      child: Row(
-        children: [
-          if (isExpand)
-            TonalButtonGroup(
-              size: TonalButtonSize.compact,
-              children: [
-                IconButton(
-                  tooltip: context.appLocalizations.scrollToSelected,
-                  onPressed: onScrollToSelected,
-                  iconSize: 19,
-                  icon: const GlyphIcon(AppGlyphs.locate),
-                ),
-                IconButton(
-                  tooltip: context.appLocalizations.delayTest,
-                  onPressed: isDelayTesting ? null : onDelayTest,
-                  icon: isDelayTesting
-                      ? CommonCircleLoading(size: TonalButtonSize.compact.icon)
-                      : const GlyphIcon(AppGlyphs.bolt),
-                ),
-              ],
-            )
-          else
-            Text(
-              groupType,
-              style: AppTextStyle.caption1
-                  .of(context, emphasized: true)
-                  .toLight,
-            ),
-          const SizedBox(width: 6),
-          ElasticPress(
-            child: IconButton(
-              tooltip: isExpand
-                  ? context.appLocalizations.showLess
-                  : context.appLocalizations.showMore,
-              onPressed: onToggle,
-              icon: CommonExpandIcon(expand: isExpand),
-            ),
+    return Row(
+      children: [
+        if (isExpand) ...[
+          IconButton(
+            tooltip: context.appLocalizations.scrollToSelected,
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(2),
+            onPressed: onScrollToSelected,
+            style: _shrinkWrap,
+            iconSize: 19,
+            icon: const Icon(Symbols.adjust),
           ),
-        ],
-      ),
+          const SizedBox(width: 2),
+          IconButton(
+            tooltip: context.appLocalizations.delayTest,
+            iconSize: 20,
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(2),
+            onPressed: onDelayTest,
+            style: _shrinkWrap,
+            icon: const Icon(Symbols.network_ping),
+          ),
+          const SizedBox(width: 6),
+        ] else
+          const SizedBox(width: 6),
+        IconButton.filledTonal(
+          tooltip: isExpand
+              ? context.appLocalizations.showLess
+              : context.appLocalizations.showMore,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.all(2),
+          iconSize: 24,
+          style: _shrinkWrap,
+          onPressed: onToggle,
+          icon: CommonExpandIcon(expand: isExpand),
+        ),
+      ],
     );
   }
 }

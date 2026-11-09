@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import 'rope.dart';
-
 /// Represents a single edit operation that can be undone/redone.
 /// Designed to work efficiently with rope data structures.
 sealed class EditOperation {
@@ -223,33 +221,6 @@ class ReplaceOperation extends EditOperation {
   EditOperation mergeWith(EditOperation other) => this;
 }
 
-/// Swaps whole ropes, for an edit too large to keep as text.
-class DocumentOperation extends EditOperation {
-  final Rope before, after;
-
-  DocumentOperation({
-    required this.before,
-    required this.after,
-    required super.selectionBefore,
-    required super.selectionAfter,
-    super.timestamp,
-  });
-
-  @override
-  EditOperation inverse() => DocumentOperation(
-    before: after,
-    after: before,
-    selectionBefore: selectionAfter,
-    selectionAfter: selectionBefore,
-  );
-
-  @override
-  bool canMergeWith(EditOperation other) => false;
-
-  @override
-  EditOperation mergeWith(EditOperation other) => this;
-}
-
 /// Controller for managing undo/redo operations.
 ///
 /// Usage:
@@ -322,7 +293,9 @@ class UndoRedoController extends ChangeNotifier {
   void recordEdit(EditOperation operation) {
     if (_isUndoRedoInProgress) return;
 
-    _discardAll(redoStack);
+    if (redoStack.isNotEmpty) {
+      redoStack.clear();
+    }
 
     if (undoStack.isNotEmpty && !_suppressNextMerge) {
       final last = undoStack.last;
@@ -338,7 +311,7 @@ class UndoRedoController extends ChangeNotifier {
     undoStack.add(operation);
 
     while (undoStack.length > _maxStackSize) {
-      _discard(undoStack.removeAt(0));
+      undoStack.removeAt(0);
       _dropped++;
     }
 
@@ -386,8 +359,8 @@ class UndoRedoController extends ChangeNotifier {
 
   /// Clear all undo/redo history
   void clear() {
-    _discardAll(undoStack);
-    _discardAll(redoStack);
+    undoStack.clear();
+    redoStack.clear();
     notifyListeners();
   }
 
@@ -424,29 +397,9 @@ class UndoRedoController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _discardAll(undoStack);
-    _discardAll(redoStack);
+    undoStack.clear();
+    redoStack.clear();
     super.dispose();
-  }
-
-  void _discardAll(List<EditOperation> ops) {
-    for (final op in ops) {
-      _discard(op);
-    }
-    ops.clear();
-  }
-
-  void _discard(EditOperation op) {
-    switch (op) {
-      case DocumentOperation(:final before, :final after):
-        before.dispose();
-        after.dispose();
-      case CompoundOperation(:final operations):
-        for (final child in operations) {
-          _discard(child);
-        }
-      default:
-    }
   }
 }
 

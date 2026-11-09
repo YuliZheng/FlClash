@@ -1,17 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/core/method.dart';
-import 'package:fl_clash/core/spill.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/plugins/service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:path/path.dart';
-
-import '../helpers/app_paths.dart';
 
 class _RecordingListener with ServiceListener {
   final events = <CoreEvent>[];
@@ -58,24 +53,31 @@ void main() {
 
   const channelName = '$packageName/service';
   const channel = MethodChannel(channelName);
-  const coreChannel = MethodChannel('$packageName/core');
   const codec = StandardMethodCodec();
 
   late List<MethodCall> calls;
+  // Native counts every start and stop it receives for the life of the
+  // process, just as the Service singleton outlives each test.
+  var receivedCommands = 0;
 
-  void mockChannel(
-    Future<Object?>? Function(MethodCall call) handler, {
-    MethodChannel target = channel,
-  }) {
+  const sharedState = SharedState(
+    stopTip: 'stopTip',
+    startTip: 'startTip',
+    currentProfileName: 'profile',
+    stopText: 'stop',
+    onlyStatisticsProxy: false,
+  );
+
+  void mockChannel(Future<Object?>? Function(MethodCall call) handler) {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(target, (call) async {
+        .setMockMethodCallHandler(channel, (call) async {
           calls.add(call);
+          if (call.method == 'start' || call.method == 'stop') {
+            receivedCommands++;
+          }
           return handler(call);
         });
   }
-
-  void mockCoreChannel(Future<Object?>? Function(MethodCall call) handler) =>
-      mockChannel(handler, target: coreChannel);
 
   Future<void> emitFromPlatform(Object? arguments) async {
     final payload = json.encode(
@@ -84,7 +86,7 @@ void main() {
     await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .handlePlatformMessage(
           channelName,
-          codec.encodeMethodCall(MethodCall('event', utf8.encode(payload))),
+          codec.encodeMethodCall(MethodCall('event', payload)),
           null,
         );
   }
@@ -94,30 +96,88 @@ void main() {
   });
 
   tearDown(() {
-    for (final target in [channel, coreChannel]) {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(target, null);
-    }
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
   });
 
   test('is a singleton so the platform handler is installed once', () {
     expect(Service(), same(Service()));
   });
 
+  test(
+    'reads the native active VPN snapshot and preserves absent snapshots',
+    () async {
+      mockChannel((call) async => null);
+      expect(await Service().getActiveVpnOptions(), isNull);
+      mockChannel(
+        (call) async => json.encode({
+          'enable': true,
+          'port': 7890,
+          'ipv6': false,
+          'captureDns': true,
+          'accessControlProps': const AccessControlProps().toJson(),
+          'allowBypass': true,
+          'systemProxy': true,
+          'suspendSupport': true,
+          'bypassDomain': ['localhost'],
+          'stack': 'mixed',
+          'mtu': 1500,
+        }),
+      );
+      final options = await Service().getActiveVpnOptions();
+      expect(options?.mtu, 1500);
+      expect(options?.bypassDomain, ['localhost']);
+      expect(calls.last.method, 'getActiveVpnOptions');
+    },
+  );
+
+  test('retains tunnel state snapshots independently of Core events', () async {
+    final service = Service();
+    for (final state in TunnelState.values) {
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channelName,
+            codec.encodeMethodCall(MethodCall('tunnelState', state.name)),
+            null,
+          );
+      expect(service.tunnelState.value, state);
+    }
+  });
+
+  test('repeated native snapshots do not notify tunnel observers', () async {
+    final service = Service();
+    var changes = 0;
+    void onChanged() => changes++;
+    service.tunnelState.addListener(onChanged);
+    addTearDown(() => service.tunnelState.removeListener(onChanged));
+
+    final state = service.tunnelState.value;
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          channelName,
+          codec.encodeMethodCall(MethodCall('tunnelState', state.name)),
+          null,
+        );
+
+    expect(changes, 0);
+  });
+
   group('lifecycle commands', () {
     test('start and stop report the platform result', () async {
       mockChannel((call) async => call.method == 'start');
 
-      expect(await Service().start(), isTrue);
+      expect(await Service().start(sharedState), isTrue);
       expect(await Service().stop(), isFalse);
       expect(calls.map((call) => call.method), ['start', 'stop']);
+      final sent = json.decode(calls.first.arguments as String);
+      expect(sent['currentProfileName'], 'profile');
     });
 
-    test('an absent start or stop result is treated as failure', () async {
+    test('an absent start or stop result remains unknown', () async {
       mockChannel((_) async => null);
 
-      expect(await Service().start(), isFalse);
-      expect(await Service().stop(), isFalse);
+      expect(await Service().start(sharedState), isNull);
+      expect(await Service().stop(), isNull);
     });
 
     test('an absent shutdown result is treated as success', () async {
@@ -127,7 +187,7 @@ void main() {
         await Service().shutdown(),
         isTrue,
         reason:
-            'shutdown defaults the opposite way from start/stop: a service '
+            'shutdown remains successful when a service '
             'that cannot answer is already gone',
       );
     });
@@ -141,7 +201,6 @@ void main() {
           const SharedState(
             stopTip: 'stopTip',
             startTip: 'startTip',
-            localNetworkTip: 'localNetworkTip',
             currentProfileName: 'profile',
             stopText: 'stop',
             onlyStatisticsProxy: false,
@@ -156,7 +215,6 @@ void main() {
       const state = SharedState(
         stopTip: 'stopTip',
         startTip: 'startTip',
-        localNetworkTip: 'localNetworkTip',
         currentProfileName: 'profile',
         stopText: 'stop',
         onlyStatisticsProxy: true,
@@ -173,16 +231,14 @@ void main() {
   group('stop reports', () {
     late _RecordingStopListener listener;
 
-    Future<void> reportStopped(Object? revision) async {
+    Future<void> reportStopped(Object? count) async {
       await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .handlePlatformMessage(
             channelName,
-            codec.encodeMethodCall(MethodCall('stopped', revision)),
+            codec.encodeMethodCall(MethodCall('stopped', count)),
             null,
           );
     }
-
-    int lastRevision() => calls.last.arguments as int;
 
     setUp(() {
       mockChannel((_) async => true);
@@ -192,31 +248,23 @@ void main() {
 
     tearDown(() => Service().removeListener(listener));
 
-    test('every command carries a revision newer than the last', () async {
-      await Service().start();
-      final first = lastRevision();
-      await Service().stop();
-
-      expect(lastRevision(), greaterThan(first));
-    });
-
     test(
       'a report for the start in force reaches the listeners once',
       () async {
-        await Service().start();
+        await Service().start(sharedState);
 
-        await reportStopped(lastRevision());
-        await reportStopped(lastRevision());
+        await reportStopped(receivedCommands);
+        await reportStopped(receivedCommands);
 
         expect(listener.stops, 1);
       },
     );
 
     test('a report older than the newest command is dropped', () async {
-      await Service().start();
-      final stale = lastRevision();
+      await Service().start(sharedState);
+      final stale = receivedCommands;
       await Service().stop();
-      await Service().start();
+      await Service().start(sharedState);
 
       await reportStopped(stale);
 
@@ -226,10 +274,10 @@ void main() {
     test(
       'a report is dropped while Flutter itself asked for the stop',
       () async {
-        await Service().start();
+        await Service().start(sharedState);
         await Service().stop();
 
-        await reportStopped(lastRevision());
+        await reportStopped(receivedCommands);
 
         expect(listener.stops, 0);
       },
@@ -241,9 +289,9 @@ void main() {
       Service().addListener(throwing);
       Service().addListener(listener);
       addTearDown(() => Service().removeListener(throwing));
-      await Service().start();
+      await Service().start(sharedState);
 
-      await reportStopped(lastRevision());
+      await reportStopped(receivedCommands);
 
       expect(listener.stops, 1);
     });
@@ -271,11 +319,9 @@ void main() {
 
   group('invokeMethod', () {
     test('encodes the call and decodes the response envelope', () async {
-      mockCoreChannel(
-        (_) async => utf8.encode(
-          json.encode(
-            const CoreMethodResponse(id: '7', result: {'up': 1}).toJson(),
-          ),
+      mockChannel(
+        (_) async => json.encode(
+          const CoreMethodResponse(id: '7', result: {'up': 1}).toJson(),
         ),
       );
 
@@ -302,48 +348,8 @@ void main() {
       expect(response.error, isNull);
     });
 
-    test('decodes a large UTF-8 envelope off the calling isolate', () async {
-      final names = List.generate(5000, (index) => '节点-$index');
-      mockCoreChannel(
-        (_) async => utf8.encode(
-          json.encode(CoreMethodResponse(id: '3', result: names).toJson()),
-        ),
-      );
-
-      final response = await Service().invokeMethod(
-        const CoreMethodCall(id: '3', method: CoreMethod.getProxies),
-      );
-
-      expect(response!.result, names);
-    });
-
-    test('reads an envelope the Core spilled to a file', () async {
-      final home = Directory.systemTemp.createTempSync('service_spill');
-      addTearDown(() => home.deleteSync(recursive: true));
-      await useAppPaths(home);
-      final file = File(join(home.path, coreSpillDirectoryName, '1.json'))
-        ..createSync(recursive: true)
-        ..writeAsStringSync(
-          json.encode(
-            const CoreMethodResponse(id: '8', result: 'big').toJson(),
-          ),
-        );
-      mockCoreChannel(
-        (_) async => utf8.encode(
-          json.encode(CoreMethodResponse(id: '8', file: file.path).toJson()),
-        ),
-      );
-
-      final response = await Service().invokeMethod(
-        const CoreMethodCall(id: '8', method: CoreMethod.getConfig),
-      );
-
-      expect(response!.result, 'big');
-      expect(file.existsSync(), isFalse);
-    });
-
     test('returns null when the platform sends no envelope', () async {
-      mockCoreChannel((_) async => null);
+      mockChannel((_) async => null);
 
       expect(
         await Service().invokeMethod(
@@ -354,14 +360,12 @@ void main() {
     });
 
     test('surfaces a Core error inside the envelope', () async {
-      mockCoreChannel(
-        (_) async => utf8.encode(
-          json.encode({
-            'id': '1',
-            'result': null,
-            'error': {'code': 'unavailable', 'message': 'core down'},
-          }),
-        ),
+      mockChannel(
+        (_) async => json.encode({
+          'id': '1',
+          'result': null,
+          'error': {'code': 'unavailable', 'message': 'core down'},
+        }),
       );
 
       final response = await Service().invokeMethod(
@@ -489,7 +493,7 @@ void main() {
           .defaultBinaryMessenger
           .handlePlatformMessage(
             channelName,
-            codec.encodeMethodCall(MethodCall('event', Uint8List(0))),
+            codec.encodeMethodCall(const MethodCall('event', '')),
             null,
           );
 

@@ -1,27 +1,21 @@
-import 'package:fl_clash/common/app_localizations.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
-import 'package:fl_clash/manager/hotkey_manager.dart';
+import 'package:fl_clash/manager/back_manager.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/pages/home.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
-import 'package:flutter/foundation.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../helpers/glyph_finders.dart';
-import '../helpers/test_app.dart';
-
 void main() {
   testWidgets('desktop escape runs the back flow and exits search', (
     tester,
   ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     final container = ProviderContainer();
     addTearDown(container.dispose);
     globalState.container = container;
@@ -30,15 +24,13 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          builder: (context, child) => wrapAppScopes(context, child!),
           navigatorKey: globalState.navigatorKey,
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
-          home: HotKeyManager(
+          home: BackManager(
             child: CommonScaffold(
               title: 'Logs',
               searchState: AppBarSearchState(onSearch: (_) {}),
@@ -54,7 +46,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byGlyph(AppGlyphs.search));
+    await tester.tap(find.byIcon(Symbols.search));
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
 
@@ -77,7 +69,6 @@ void main() {
       findsNothing,
       reason: 'escape must exit search through the back flow',
     );
-    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('TV back exits search on the desktop nested route', (
@@ -96,7 +87,7 @@ void main() {
           NavigationItemsState(
             value: [
               NavigationItem(
-                glyph: AppGlyphs.dashboard,
+                icon: const Icon(Symbols.space_dashboard),
                 label: PageLabel.dashboard,
                 builder: (_) => CommonScaffold(
                   key: const GlobalObjectKey(PageLabel.dashboard),
@@ -110,7 +101,7 @@ void main() {
                 ),
               ),
               NavigationItem(
-                glyph: AppGlyphs.tools,
+                icon: const Icon(Symbols.construction),
                 label: PageLabel.tools,
                 builder: (_) => const SizedBox.shrink(),
               ),
@@ -130,25 +121,31 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          builder: (context, child) => wrapAppScopes(context, child!),
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
-          home: const HomePage(),
+          home: const BackManager(child: HomePage()),
         ),
       ),
     );
     await tester.pump();
-    expect(find.byType(NavigationSidebar), findsOneWidget);
+    expect(find.byType(NavigationRail), findsOneWidget);
 
-    await tester.tap(find.byGlyph(AppGlyphs.search));
+    await tester.tap(find.byIcon(Symbols.search));
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
     await tester.enterText(find.byType(TextField), 'needle');
     expect(query, 'needle');
+
+    final homePopScope = find
+        .descendant(
+          of: find.byType(HomeBackScopeContainer),
+          matching: find.byWidgetPredicate((widget) => widget is PopScope),
+        )
+        .first;
+    expect(tester.widget<PopScope>(homePopScope).canPop, isFalse);
 
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
@@ -156,7 +153,8 @@ void main() {
     expect(closeCount, 0, reason: 'back must not fall through to app close');
     expect(find.byType(TextField), findsNothing);
     expect(query, isEmpty);
-  });
+    expect(tester.widget<PopScope>(homePopScope).canPop, isTrue);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 }
 
 class _TestSystemAction extends SystemAction {

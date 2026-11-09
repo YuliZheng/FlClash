@@ -2,7 +2,8 @@
 
 ## Building
 
-Update submodules first. The ClashMeta Go core lives in `core/Clash.Meta/`.
+Update submodules first. The mihomo Go core lives in `core/mihomo/`; `core/go.mod` also replaces
+`github.com/metacubex/sing-tun` with the `core/sing-tun/` fork.
 
 ```bash
 git submodule update --init --recursive
@@ -12,18 +13,21 @@ Full package build, including Go core, Flutter, and packaging, runs through `set
 
 ```bash
 dart setup.dart macos
+dart setup.dart macos --arch x64     # Intel package, including on an Apple Silicon host
+dart setup.dart macos --arch x64-v3  # same Intel slice; Core built with GOAMD64=v3
 dart setup.dart linux
+dart setup.dart linux --arch x64-v3  # x64 host; Core built with GOAMD64=v3
 dart setup.dart windows
 dart setup.dart android
+dart setup.dart ios --no-codesign  # macOS host, arm64 device IPA
 ```
 
-The desktop Go core and the Rust helper build automatically: Flutter runs
+The Go core and the Rust helper build automatically: Flutter runs
 `plugins/setup/hook/build.dart` on every `flutter build` and `flutter test`,
 and the hook drives `CoreBuilder` from the `setup_hooks` package in
-`plugins/setup/setup_hooks/`. Artifacts land in `libclash/`. Android's Core is
-the AAR the `:core` Gradle module builds with `gomobile bind` before anything
-compiles against it; that needs `go` on `PATH` and nothing else, since the
-gomobile tools come from `core/go.mod` and the NDK from AGP. The hook reruns only when Go, Rust, or
+`plugins/setup/setup_hooks/`. Android builds take the NDK from the C compiler
+Flutter hands the hook; no `ANDROID_NDK` variable is needed.
+Artifacts land in `libclash/`. The hook reruns only when Go, Rust, or
 `setup_hooks` inputs change; the fingerprint cache lives in
 `.dart_tool/setup_build_cache/`. To force a rebuild, delete that directory:
 
@@ -50,18 +54,16 @@ hooks:
       build_assets: true   # false does the same for the Rust library
 ```
 
-CI flips `setup` to `false` with `yq` in its throwaway checkout before
-`dart run tool/changelog.dart` and `dart run tool/test.dart`; no test loads the Go core. `rust_api`
-stays on there because the editor tests in `test/plugins/code_forge/` and the socket
-test in `test/core/desktop/ipc_native_test.dart` load the Rust library the hook
-builds; the release-notes job, which runs no tests, flips both.
+CI flips both to `false` with `yq` before `flutter test` and before
+`dart run tool/changelog.dart`. The changelog script loads neither library.
+The editor tests do load `librust_api`, so the Rust job builds that release
+library and the test shards open it through
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR`.
 Never commit `false`: a build with it set stages whatever `libclash/` already
 holds and bundles no Rust library, which is why `setup.dart` refuses to package
 while it is set. Locally, `false` is worth setting for a Dart-only test loop,
 but the hook cache keys on the user-define, so the first build afterwards runs
-the hooks again. The editor and IPC socket tests still need the Rust library: keep `rust_api`
-on, or point `FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` at a directory that
-holds a `rust_api` library built from the same sources.
+the hooks again.
 
 ## Flutter Development
 
@@ -74,30 +76,14 @@ flutter test
 ```
 
 Use `flutter test`, not `dart test`, because models pull in Flutter types.
-
-A development build takes over the host exactly like a release: it creates the TUN device, sets the system proxy, on
-macOS rewrites the system DNS, registers itself as the login item, and on Windows and Linux starts its Core through the
-shared privileged Helper, which stops the Core an installed FlClash is running. Only the data directory is kept apart,
-and only for some builds: a macOS debug build is `com.follow.clash.debug` and an Android debug build `com.follow.clash.dev`,
-while profile and release builds, and every build on Windows and Linux, share the directory and preferences of the
-installed app. Safe mode keeps all of the host changes off and never opens the Core's listeners or external
-controller, so it does not compete with the installed app for the mixed, DNS, RESTful API and other loopback ports:
-
-```bash
-flutter run --dart-define-from-file=env.json --dart-define=SAFE_MODE=true
-```
-
-`.run/main_safe_mode.run.xml` is the same launch for IntelliJ, and `Flutter App (Safe Mode)` in `.zed/debug.json` (debugger) or `flutter run (Safe Mode)` in `.zed/tasks.json`
-(plain run) for Zed. The build is bannered `SAFE MODE`, the tray shows the
-`status_4` bug icon with a menu of only show and exit and no traffic title, and the settings keep their values, so
-nothing has to be flipped back before a normal run. See the safe mode section of `architecture.md` for the owners that consult the flag.
+On Windows, run `dart` and `flutter` outside the agent sandbox; the SDK environment is restricted inside it.
 
 ## Code Generation
 
 Run code generation after modifying models, providers, or database schema:
 
 ```bash
-dart run build_runner build --delete-conflicting-outputs
+dart run build_runner build
 dart run build_runner watch
 ```
 
@@ -107,39 +93,32 @@ Code generation covers:
 - Models through `freezed` and `json_serializable`.
 - Database tables through `drift_dev`.
 
-The Dart-Rust bindings in `plugins/rust_api` are generated by `flutter_rust_bridge_codegen` from
-`plugins/rust_api/flutter_rust_bridge.yaml`; rerun it from that directory after changing anything under
-`rust/src/api/`:
-
-```bash
-cd plugins/rust_api && flutter_rust_bridge_codegen generate
-```
-
 Generated output paths, configured in `build.yaml`:
 
 - `lib/models/generated/*.g.dart`, `*.freezed.dart`.
 - `lib/providers/generated/*.g.dart`.
 - `lib/database/generated/*.g.dart`.
-- `lib/ui/generated/*.freezed.dart`.
 
-Tray and Windows app icons are generated, not hand-edited. `assets_source/images/icon/*.svg` is
-the source of truth; the script needs `rsvg-convert` (librsvg) on `PATH`:
+After changing `arb/intl_*.arb`, regenerate localization and format the output:
+
+```bash
+dart run intl_utils:generate
+dart format lib/l10n
+flutter test test/l10n/ test/lint/dynamic_message_key_test.dart
+```
+
+Windows tray and app icons are generated, not hand-edited. `assets_source/images/icon/status_*.svg` is
+the source of truth for the Windows tray; the script needs `rsvg-convert` (librsvg) on `PATH`:
 
 ```bash
 dart run tool/generate_status_icons.dart
 ```
 
-It writes the tray PNGs with Flutter `2.0x/`–`4.0x/` resolution variants to `assets/images/tray/unix/`,
-multi-size tray `.ico` files to `assets/images/tray/windows/`, and `windows/runner/resources/app_icon.ico`
-from `assets/images/icon.png`. `status_1`–`status_3` are the logo glyph alone and tell stopped, running and TUN
-apart only by color, so they carry no rings or shadow. macOS draws its menu bar icon as a template by default,
-where color is lost: `status_1` renders the bare logo from `assets_source/images/icon/glyph.svg` and `status_4`
-reuses `status_4.svg`, both recolored to black into `assets/images/tray/macos/`; the sources keep their colors.
-With the tray menu's monochrome icon turned off, macOS loads the color PNGs from `assets/images/tray/unix/`.
-`glyph.svg` is also the geometry of the Android notification drawables
-`android/service/src/main/res/drawable/ic.xml` and `ic_service.xml`; change them together. `pubspec.yaml` declares the three tray directories with `platforms:` so each
-build only bundles the formats its tray loads; a new status icon needs a source SVG and an entry in the
-script's `statusIconNames`, nothing in `pubspec.yaml`.
+It writes multi-size tray `.ico` files to `assets/images/tray/windows/` and `windows/runner/resources/app_icon.ico`
+from `assets/images/icon.svg`. The Linux tray loads the hand-maintained SVGs in `assets/images/tray/linux/` directly
+(a smaller glyph and badge than the Windows set, drawn without masks because Qt SVG hosts ignore them). `pubspec.yaml`
+declares the two tray directories with `platforms:` so each build only bundles the format its tray loads; macOS always
+uses the symbolic template icon.
 
 ## Testing
 
@@ -157,29 +136,9 @@ flutter test test/setup_test.dart
 flutter test plugins/proxy/test/proxy_test.dart
 ```
 
-For the whole suite, or a directory of more than a few files, use `tool/test.dart`, which is also what CI runs:
-
-```bash
-dart run tool/test.dart                                  # all of test/
-dart run tool/test.dart test/widgets test/views          # some paths
-dart run tool/test.dart -- --reporter expanded --coverage
-```
-
-Plain `flutter test` compiles each file into its own program and starts an engine for it, one file after another, and
-that dominates a full run: 329 files took 128 s on a 12-core Mac with at most four running at once. `tool/test.dart`
-imports the files into 32 generated entrypoints under `.dart_tool/test_bundles/` and runs those with one worker per
-core: about 60 s for the same run, and 67 s instead of 180–213 s with `--coverage`. Files in one entrypoint share an
-isolate, so a test can see state a file before it left behind; the script runs every file that failed there again on
-its own, lets that run decide, and names the files that only failed together. See the Shared Test Isolate section of
-`rules.md` before fixing one.
-
 `plugins/setup/setup_hooks/` is a pure Dart package and is tested with `dart test` from its own directory, which is
 also what CI runs; `tool/check_plugins.sh` does not descend into it. It must stay out of `flutter test`, because a test
 run of `plugins/setup` would execute the build hook itself.
-
-Native plugin code under `plugins/*/{linux,macos,windows}` is compiled by the CI `desktop` job, which runs
-`flutter build <platform> --debug` on every branch push, and by the release matrix on a tag; `tool/check_plugins.sh`
-only analyzes and tests the Dart side.
 
 Root `flutter test` only discovers the root package's `test/` directory by default. Include bundled plugin Dart tests by passing paths explicitly, or run `flutter test` from that plugin package directory, or run `bash tool/check_plugins.sh` to analyze and test every plugin package the way CI does. Native plugin tests under platform folders are not run by `flutter test`.
 
@@ -197,8 +156,7 @@ flutter test test/widgets/core_status_button_test.dart
 What those suites own:
 
 - `test/core/desktop/`: replaceable IPC transport, RPC request correlation/failure, direct/Helper process leases, and
-  latest-intent desktop lifecycle convergence. `ipc_native_test.dart` runs the transport over a real socket through
-  the Rust `IpcServer`; the server's own behavior is covered by `cargo test` in `plugins/rust_api/rust`.
+  latest-intent desktop lifecycle convergence.
 - `test/core/service_test.dart`: `CoreService` composition and terminal close behavior.
 - `test/core/protocol_contract_test.dart`: shared Dart/Go method and event-envelope compatibility, including event batches.
 - `test/providers/action_test.dart`: Core start/restart orchestration and overlapping restart requests.
@@ -206,15 +164,24 @@ What those suites own:
 - `test/widgets/core_status_button_test.dart`: 600-millisecond connecting presentation hold, immediate failure display,
   long-running connecting state, and disconnected restart.
 
+For the in-app updater:
+
+```bash
+flutter test test/common/app_update_test.dart test/common/request_download_test.dart test/common/request_test.dart test/widgets/update_dialog_test.dart
+```
+
+These cover target and asset selection, manifest parsing, package-manager invocation, download resumption and
+cancellation, and update dialogs. The package-install shell tests skip Windows; actual installation, permission
+prompts, and relaunch still need verification on each target platform.
+
 ## Native Component Verification
 
-The CI Go-wrapper checks can be reproduced without CGO, the Android files included:
+The CI Go-wrapper checks can be reproduced without CGO:
 
 ```bash
 cd core
 CGO_ENABLED=0 go test .
-CGO_ENABLED=0 go vet . ./cmd/...
-GOOS=android GOARCH=arm64 CGO_ENABLED=0 go vet -tags=with_gvisor . ./mobile ./tun ./platform
+CGO_ENABLED=0 go vet .
 ```
 
 The Windows Helper's loopback/session protocol tests are host-independent by default. Windows CI additionally enables its
@@ -227,15 +194,12 @@ cargo test --manifest-path services/helper/Cargo.toml --features windows-service
 ```
 
 The last command requires Windows for meaningful service coverage. Native Android lifecycle edits should at minimum
-compile the modules they touch, with the JDK 17 that CI installs. On macOS the Homebrew `openjdk@17` keg is not
-registered with `java_home`, so export it by prefix:
+compile the modules they touch; use JDK 17 in this checkout:
 
 ```bash
 cd android
-export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"   # elsewhere: any JDK 17
-./gradlew :core:compileDebugKotlin -Ptarget-platform=android-arm64   # builds the gomobile AAR for one ABI
-./gradlew :service:compileDebugKotlin
-./gradlew :app:compileDebugKotlin
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ./gradlew :service:compileDebugKotlin
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ./gradlew :app:compileDebugKotlin
 ```
 
 Always-on VPN entry, system VPN revoke, actual permission UI, and rapid device start/stop still require Android device or
@@ -247,17 +211,35 @@ The changelog is derived from Conventional Commits by `tool/changelog.dart` and 
 `CHANGELOG.md` for readers and `changelog.json` for the renderers. See `.agents/rules.md` for the `Changelog:` trailers
 that decide the wording.
 
-The app ships no changelog of its own. `render release` appends the released version as JSON inside an HTML comment
-(`<!-- flclash:changelog:json … -->`), so the release body GitHub already returns to `checkForUpdate` carries the
-notes shown in the update dialog. `parseReleaseChangelog` reads that block and falls back to the English
+The app ships no changelog of its own. `render` appends the released version as JSON inside an HTML comment
+(`<!-- flclash:changelog:json … -->`), so the release body, which `tool/release_manifest.sh` copies into the
+`notes` of `version.json`, carries the notes shown in the update dialog. `parseReleaseChangelog` reads that block and falls back to the English
 bullets when a release predates it.
 
+The in-app updater (`lib/common/app_update.dart`, `app_installer.dart`) prefers a release asset over the GitHub API.
+`checkForUpdate` downloads `releases/latest/download/version.json`, the manifest
+the `upload` job writes with `tool/release_manifest.sh`: the tag, version, release notes, and every asset's name, URL, size
+and SHA-256. It has no schema version, so a change to it must stay readable by older builds: add fields, never rename
+or retype `tag`, `notes` or an asset's fields. Only when the manifest is missing or unreadable does it fall back to the
+API's `releases/latest`, whose assets carry `sha256:` digests. The check and the download share the client that routes
+through the Core while it runs. The updater finds its asset by the `FlClash-<version>-<platform>-<arch>…` names in `.github/release_template.md`, so
+renaming an asset breaks updates for that package, and it installs only a file matching the manifest's hash; an asset
+without one falls back to the release page. The arch suffix comes from the `APP_ARCH` dart-define that
+`setup.dart` writes into `env.json`, because x64 and x64-v3 share one Flutter binary. The package format is detected
+at runtime: Inno's `unins000.exe` or a portable `config/` on Windows, `$APPIMAGE` or the owning package manager on
+Linux. A deb/rpm/pacman install updates through its package manager under one `pkexec` prompt, the polkit path TUN
+uses: `packageInstallScript` in `app_installer.dart` re-verifies a root-owned copy of the package, installs it, and
+attempts to restart `flclash-helper.service`, whose old process would reject the new Core's hash. Package-manager
+updates download into the app's temporary directory. Without `pkexec` or a known package manager, or when installation
+fails or authorization is refused, the app stays running and retains the package without a manual-install dialog.
+AppImage downloads are staged beside the running image so replacement can use a rename. Interrupted downloads retain
+their `.part` files for resumption; completed downloads must pass SHA-256 verification before installation.
+
 ```bash
-dart run tool/changelog.dart verify                  # what CI checks
+dart run tool/changelog.dart verify                  # local changelog consistency check
 dart run tool/changelog.dart release --version 0.8.96
 dart run tool/changelog.dart build --unreleased      # changelog.json only, includes untagged work
-dart run tool/changelog.dart render release --out release.md
-dart run tool/changelog.dart render telegram --out telegram.md
+dart run tool/changelog.dart render --out release.md
 ```
 
 Releasing a stable version, in order:
@@ -284,7 +266,8 @@ tool/release.sh stable --push     # changelog, chore(release) commit, tag, push
 ```
 
 The release commit comes before the tag on purpose: the generated wording is reviewable in the diff before it ships, and
-the tag is what `render release` reads. CI never writes back to the repository; it only runs `verify`. Wording in
+the tag is what `render` reads. For stable tags, CI runs `build` and `render --tag` to prepare release notes without
+writing back to the repository; it does not run `verify`. Wording in
 `changelog.json` may be edited by hand as long as no derivable entry disappears and every entry still points at a commit
 inside that version's range.
 
@@ -296,92 +279,47 @@ in `CHANGELOG.md`, and are never regenerated.
 skipped and moves on instead of reporting drift that does not exist. Checking mere tag existence is what made every such
 branch fail on an unrelated release.
 
-Prerelease tags (`v0.8.96-pre.N`) skip the release commit, and CI renders their notes with `build --unreleased` for the
-Telegram post. They publish no GitHub release, so the update dialog never sees them. `build --unreleased` reads the
+Prerelease tags (`v0.8.96-pre.N`) skip the release commit, and CI publishes them as GitHub prereleases without
+changelog notes. `build --unreleased` reads the
 version from `pubspec.yaml` rather than the tag, so the patch has to be bumped before the first `-pre.N` of a cycle:
 while `v<pubspec version>` is still tagged it refuses to collect anything and the release job fails.
 
-### Website
-
-`site/` is the GitHub Pages site: a static page that renders `CHANGELOG.md` and the download links in the browser, and
-works as is for local previews. `tool/build_site.sh [dir]` assembles it with the preview images, the app icon,
-`CHANGELOG.md` read at the latest release tag, and a `release.json` of asset names, sizes and digests fetched through
-`gh`. Without `gh` access the page falls back to the newest version in `CHANGELOG.md` and lists the files without sizes.
-It then runs `tool/render_site.mjs` (Node), which writes the English page and a `zh/` copy for search engines: page
-text, the first changelog releases, canonical and `hreflang` links, JSON-LD and `sitemap.xml`, all from the strings,
-changelog parser and release markup in `site/assets/shared.js`, plus the GitHub star count from `release.json` so the
-nav does not grow when the page loads. `SITE_URL` overrides the published URL these point at.
-On the built site each URL keeps its language: the language button links to the other page and carries the section in
-view, the chosen platform and the changelog search. Only the English root sends readers who chose or prefer Chinese on
-to `zh/`, unless its URL carries `?lang=en`: the button on `zh/` links there with it, so getting back to English never
-depends on browser storage. A project site cannot serve the `robots.txt` that would announce the sitemap, so submit
-`sitemap.xml` in Google Search Console and Bing Webmaster Tools once.
-
-```bash
-tool/build_site.sh && python3 -m http.server -d build/site
-```
-
-The page's look is deliberate: low-saturation flat colour, no blur, glow, glass or soft shadow, and motion that follows
-the logo's 30° lattice. `site/assets/field.js` draws the hero's capsules on that lattice with the glyph's own
-proportions, and the slanted wipes, the dot-to-bar marks and the theme transition reuse the same angle. Text that sits
-inside the hero has to be listed in `wireField` in `app.js`, or the capsules run behind it.
-
-`.github/workflows/pages.yaml` deploys it after every successful stable tag build and on pushes to `main` that touch the
-site, in the public repository only; its Pages source has to be set to GitHub Actions once. The file names come from the
-release matrix in `build.yaml`, so a renamed artifact needs the same change in `buildsFor` in `site/assets/app.js`.
-
 ## Verify
 
-In the public repository every branch push runs the `dart` job; in the private
-`origin` every check job runs only when started by hand (`workflow_dispatch`).
-The `dart` job performs these root-package checks in order:
+Every branch push runs `dart-checks` and eight `dart-tests` shards. `dart-checks` validates the commit-message and
+comment-density hook tests, formatting, and analysis. The test shards wait for the Rust library build.
+The equivalent local root-package checks are:
 
 ```bash
-bash tool/hooks/test.sh
+bash tool/check_commit_msg_test.sh
+bash tool/check_comment_density_test.sh
 flutter pub get
 dart format --output=none --set-exit-if-changed lib test tool plugins setup.dart
 flutter analyze --no-fatal-infos
-dart run tool/changelog.dart verify   # main and tags only
-dart run tool/test.dart -- --reporter expanded --coverage
-dart run tool/check_coverage.dart coverage/lcov.info 75
+flutter test --reporter expanded
 ```
 
-`tool/hooks/` holds the scripts the git hooks run, and `tool/hooks/test.sh` runs every `*_test.sh` beside them, so a
-new hook script needs only its test file next to it, not a workflow step.
+Each CI test shard uses `--total-shards=8 --shard-index=0` (indices 0–7), with
+fail-fast enabled for the test matrix. CI currently collects no coverage and enforces no coverage floor.
+Release builds depend directly on `dart-checks` and all test shards.
 
-Run `flutter analyze --no-fatal-infos` before committing; CI runs the same command and fails on a warning or error.
+Run `flutter analyze` locally before committing when practical.
 
 Release builds run only for `v*` tag pushes; pull requests trigger nothing.
 Root analysis excludes `plugins/**`, and root tests do not discover nested
 plugin packages, so parallel jobs validate the rest from their own package
 directories: `plugins` (local Flutter packages and the setup build tool), `go`
-(the Core wrapper, plus a vet of the Android files), `android` (JVM unit tests
-for `:common`, `:service` and `:app`, with the Flutter compile tasks excluded
-and the gomobile AAR built for one ABI), `rust` (both crates), and a
-Windows runner for the helper's `windows-service` feature. On branch pushes a
-`desktop` job also compiles a debug build per desktop platform; a tag skips it,
-since its release matrix compiles the same native code. Release builds run only
-in the public repository and start alongside the checks; `upload` publishes
-only once every build and every check job passes.
+(the Core wrapper, plus an NDK-backed vet of the Android files), `android`
+(JVM unit tests for `:common`, `:service` and `:app`, with the Flutter compile
+tasks excluded so no native build hook runs), `rust` (both crates), and a
+Windows runner for the helper's `windows-service` feature. Release builds start
+once all of them pass.
 
 `bash tool/check_plugins.sh` is that plugin gate, and CI runs the same script.
 It discovers every `plugins/*/pubspec.yaml`, analyzes each package, and runs
 `flutter test` wherever `test/*_test.dart` exists. Adding a plugin package needs
 no workflow edit; enumerating packages by hand in the workflow is what
 previously left `plugins/tray` unanalyzed and untested.
-
-### CI Caches
-
-A run restores only cache entries saved on its own branch or tag, or on the default branch (`main`), and the
-repository holds 10 GB before evicting the least recently used entries. Every release is a new tag that no later run
-reads from, so `BRANCH_CACHE` turns caching off in tag runs: one release used to write about 9 GB of such entries and
-evict everything `dev` had saved. Release builds therefore start cold; branch runs, chiefly `dev`, keep the caches.
-
-- setup-go keys its entry on the `cache-dependency-path` files alone and saves only on a miss, so jobs listing the
-  same files share one entry holding the build cache of whichever finished first. `desktop` and `android` each add
-  the file that drives their Core build to get an entry of their own.
-- setup-gradle writes only on the default branch unless told otherwise, so `android` lets `dev` write as well. Its
-  entries are keyed by job, which is one more reason the release build gains nothing from caching.
 
 ## Worktree Tooling
 

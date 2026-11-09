@@ -13,10 +13,12 @@ typedef InputProcessRunner =
 
 typedef PasswordPrompt = Future<String?> Function();
 
-/// pkexec exits 127 when it cannot obtain an authorization at all, which is
-/// what happens without a polkit agent, as under many tiling window managers;
-/// 126 is the user dismissing the dialog and is final.
+/// pkexec exits 127 for a denial, a failed authentication and the command's
+/// own 127 alike; only a missing polkit agent, as under many tiling window
+/// managers, warrants asking through sudo instead. polkitd, not the
+/// user's locale, phrases the error.
 const _pkexecNotAuthorized = 127;
+const _pkexecNoAgent = 'No authentication agent found';
 
 class LinuxElevation {
   @visibleForTesting
@@ -31,7 +33,8 @@ class LinuxElevation {
   Future<bool> elevate(List<String> command) async {
     try {
       final result = await run('pkexec', command);
-      if (result.exitCode != _pkexecNotAuthorized) {
+      if (result.exitCode != _pkexecNotAuthorized ||
+          !result.stderr.toString().contains(_pkexecNoAgent)) {
         return _succeeded('pkexec', result);
       }
       commonPrint.log(

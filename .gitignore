@@ -27,7 +27,6 @@ migrate_working_dir/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
-/.widget_preview/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
@@ -58,10 +57,14 @@ docs/
 /android/**/build
 /android/common/**/.**/
 /android/common/local.*
-# Left in place by builds from before the gomobile Core.
 /android/core/**/includes/
 /android/core/**/cmake-build-*/
 /android/core/**/jniLibs/
+.gradle/
+.kotlin/
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+problems-report.html
 
 #FlClash
 /libclash/
@@ -71,7 +74,10 @@ docs/
 /macos/build/
 /env.json
 /core_sha256.json
+/core/*.exe
+/assets/data/
 /plugins/rust_api/.claude/
+/ios/Flutter/GeneratedBundleConfig.xcconfig
 /issue-triage/
 devtools_options.yaml
 
@@ -79,3 +85,5 @@ devtools_options.yaml
 .fvm/
 .fvmrc
 /coverage/lcov.info
+# Widget Preview related
+.widget_preview/

@@ -10,6 +10,11 @@ List<CoreEvent> coreEventsFromData(Object? data) {
   final events = <CoreEvent>[];
   for (final item in items.whereType<Map>()) {
     try {
+      final type = item['type'];
+      if (type is! String ||
+          !CoreEventType.values.any((eventType) => eventType.name == type)) {
+        throw FormatException('Unknown Core event type: $type');
+      }
       events.add(CoreEvent.fromJson(Map<String, Object?>.from(item)));
     } catch (error) {
       commonPrint.log(
@@ -28,8 +33,6 @@ abstract mixin class CoreEventListener {
 
   void onRequest(TrackerInfo connection) {}
 
-  void onRequestTraffic(Map<String, RequestTraffic> traffic) {}
-
   void onDns(DnsQuery dnsQuery) {}
 
   void onLoaded(String providerName) {}
@@ -42,10 +45,6 @@ abstract mixin class CoreEventListener {
     bool skipped,
     String? error,
   ) {}
-
-  void onRouteChanged(RouteSnapshot snapshot) {}
-
-  void onDialerLoop(String proxyName) {}
 }
 
 class CoreEventManager {
@@ -57,22 +56,15 @@ class CoreEventManager {
         try {
           switch (event.type) {
             case CoreEventType.log:
-              listener.onLog(Log.fromJson(event.data));
+              listener.onLog(
+                Log.fromJson(event.data).copyWith(source: LogSource.core),
+              );
               break;
             case CoreEventType.delay:
               listener.onDelay(Delay.fromJson(event.data));
               break;
             case CoreEventType.request:
               listener.onRequest(TrackerInfo.fromJson(event.data));
-              break;
-            case CoreEventType.requestTraffic:
-              listener.onRequestTraffic({
-                for (final Map item in event.data)
-                  item['id'] as String: (
-                    upload: (item['upload'] as num).toInt(),
-                    download: (item['download'] as num).toInt(),
-                  ),
-              });
               break;
             case CoreEventType.dns:
               listener.onDns(DnsQuery.fromJson(event.data));
@@ -91,14 +83,6 @@ class CoreEventManager {
                 data['skipped'] as bool? ?? false,
                 data['error'] as String?,
               );
-              break;
-            case CoreEventType.routeChanged:
-              listener.onRouteChanged(
-                RouteSnapshot.fromJson(Map<String, Object?>.from(event.data)),
-              );
-              break;
-            case CoreEventType.dialerLoop:
-              listener.onDialerLoop(event.data as String);
               break;
           }
         } catch (error) {

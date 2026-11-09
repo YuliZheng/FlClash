@@ -1,125 +1,121 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/pages/editor.dart';
 import 'package:fl_clash/pages/scan.dart';
-import 'package:fl_clash/plugins/app.dart';
-import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
-import 'package:fl_clash/views/profiles/custom/custom.dart';
-import 'package:fl_clash/features/form/form.dart';
+import 'package:fl_clash/state.dart';
+import 'package:fl_clash/providers/action.dart';
+import 'package:fl_clash/views/profiles/age_key_generator.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// The ways to add a profile, in a menu out of the control [builder] makes.
-class AddProfileMenu extends ConsumerWidget {
-  const AddProfileMenu({super.key, required this.builder});
+class AddProfileView extends ConsumerWidget {
+  final BuildContext context;
+  final BuildContext? editorContext;
 
-  final Widget Function(PopupOpen open) builder;
+  const AddProfileView({super.key, required this.context, this.editorContext});
 
   Future<void> _handleAddProfileFormFile(WidgetRef ref) async {
     unawaited(ref.read(profilesActionProvider.notifier).addProfileFormFile());
   }
 
-  Future<void> _toScan(BuildContext context, WidgetRef ref) async {
+  Future<void> _toScan(WidgetRef ref) async {
     final profilesAction = ref.read(profilesActionProvider.notifier);
     if (system.isDesktop) {
       unawaited(profilesAction.addProfileFormQrCode());
       return;
     }
     final url = await BaseNavigator.push(context, const ScanPage());
-    if (url == null) {
-      return;
-    }
-    if (context.mounted) {
-      await whenRouteUncovered(context);
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(profilesAction.addProfileFromLink(url));
-    });
-  }
-
-  Future<void> _toAdd(BuildContext context, WidgetRef ref) async {
-    final profilesAction = ref.read(profilesActionProvider.notifier);
-    final appLocalizations = context.appLocalizations;
-    final res = await showNamedUrlsForm(
-      context,
-      title: appLocalizations.importFromLink,
-      urlLabel: appLocalizations.link,
-      batchTip: appLocalizations.batchLinkInputTip,
-      urlValidator: (value) {
-        if (value == null || value.isEmpty) {
-          return appLocalizations.emptyTip(appLocalizations.link);
-        }
-        if (!value.isUrl && !value.isShareLink) {
-          return appLocalizations.invalidLinkTip;
-        }
-        return null;
-      },
-      existingUrls: {
-        for (final profile in ref.read(profilesProvider))
-          if (profile.url.isNotEmpty) profile.url,
-      },
-      withAgeSecretKey: true,
-    );
-    switch (res) {
-      case null:
-        return;
-      case [final single]:
-        unawaited(
-          profilesAction.addProfileFromLink(
-            single.url,
-            label: single.label,
-            ageSecretKey: single.ageSecretKey,
-          ),
-        );
-      default:
-        unawaited(
-          profilesAction.addProfilesFromLinks([
-            for (final item in res) item.url,
-          ]),
-        );
+    if (url != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(profilesAction.addProfileFormURL(url));
+      });
     }
   }
 
-  Future<void> _toSendFromPhone(WidgetRef ref) async {
+  Future<void> _toAdd(WidgetRef ref) async {
     final profilesAction = ref.read(profilesActionProvider.notifier);
-    if (!(await app?.requestLocalNetworkPermission() ?? true)) {
-      final appLocalizations = currentAppLocalizations;
-      final res = await dialogs.showMessage(
-        message: TextSpan(text: appLocalizations.sendFromPhonePermissionDenied),
-        confirmText: appLocalizations.settings,
+    final result = await dialogs
+        .showCommonDialog<({String url, String? ageSecretKey})>(
+          child: const URLFormDialog(),
+        );
+    if (result != null) {
+      unawaited(
+        profilesAction.addProfileFormURL(
+          result.url,
+          ageSecretKey: result.ageSecretKey,
+        ),
       );
-      if (res == true) {
-        await app?.openAppSettings();
-      }
-      return;
-    }
-    final link = await dialogs.showCommonDialog<String>(
-      child: const _SendFromPhoneDialog(),
-    );
-    if (link == null) {
-      return;
-    }
-    final appLocalizations = currentAppLocalizations;
-    final confirmed = await dialogs.showMessage(
-      title: appLocalizations.sendFromPhoneConfirmTitle,
-      message: TextSpan(text: link),
-      confirmText: appLocalizations.import,
-    );
-    if (confirmed == true) {
-      unawaited(profilesAction.addProfileFromLink(link));
     }
   }
 
-  void _toAddCustom(BuildContext context, WidgetRef ref) {
-    final profileId = ref
-        .read(profilesActionProvider.notifier)
-        .addCustomProfile(context.appLocalizations.unnamed);
-    unawaited(
-      BaseNavigator.push(
-        context,
-        CustomProfileView(profileId: profileId, isNew: true),
+  Future<void> _createProfile(BuildContext context, WidgetRef ref) async {
+    final appLocalizations = context.appLocalizations;
+    final profilesAction = ref.read(profilesActionProvider.notifier);
+    final name = await dialogs.showCommonDialog<String>(
+      child: InputDialog(
+        autofocus: true,
+        title: appLocalizations.newProfile,
+        value: '',
+        labelText: appLocalizations.name,
+        inputFormatters: TextInputLimits.limit(TextInputLimits.name),
+        validator: (value) => value == null || value.trim().isEmpty
+            ? appLocalizations.profileNameNullValidationDesc
+            : null,
+      ),
+    );
+    if (name == null || !context.mounted) return;
+    final navigationContext = editorContext ?? context;
+    if (!navigationContext.mounted) return;
+    if (editorContext != null) {
+      Navigator.of(context).pop();
+    }
+    final profile = Profile.normal(label: name.trim());
+    var saving = false;
+
+    Future<void> save(BuildContext editorContext, String content) async {
+      if (saving) return;
+      saving = true;
+      try {
+        final saved = await globalState.safeRun(
+          () => profile.saveFile(
+            Uint8List.fromList(utf8.encode(content)),
+            prepare: profilesAction.prepareProfileConfig,
+          ),
+          title: appLocalizations.newProfile,
+        );
+        if (saved == null) return;
+        profilesAction.putProfile(saved);
+        if (editorContext.mounted) {
+          Navigator.of(editorContext).pop();
+        }
+      } finally {
+        saving = false;
+      }
+    }
+
+    await BaseNavigator.push<void>(
+      navigationContext,
+      EditorPage(
+        title: profile.label,
+        content: '',
+        onSave: (context, _, content) => save(context, content),
+        onPop: (context, _, content) async {
+          if (saving) return false;
+          if (content.isEmpty) return true;
+          final result = await dialogs.showMessage(
+            title: profile.label,
+            message: TextSpan(text: appLocalizations.hasCacheChange),
+          );
+          if (result != true) return true;
+          if (context.mounted) await save(context, content);
+          return false;
+        },
       ),
     );
   }
@@ -127,126 +123,172 @@ class AddProfileMenu extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final appLocalizations = context.appLocalizations;
-    return CommonPopupBox(
-      targetBuilder: builder,
-      popupBuilder: (_) => CommonPopupMenu(
-        items: [
-          CommonPopupMenuItem(
-            glyph: AppGlyphs.qrCode,
-            label: appLocalizations.qrcode,
-            onPressed: () => _toScan(context, ref),
-          ),
-          CommonPopupMenuItem(
-            glyph: AppGlyphs.importFile,
-            label: appLocalizations.file,
-            onPressed: () => _handleAddProfileFormFile(ref),
-          ),
-          CommonPopupMenuItem(
-            glyph: AppGlyphs.cloudDownload,
-            label: appLocalizations.link,
-            onPressed: () => _toAdd(context, ref),
-          ),
-          if (system.isTV)
-            CommonPopupMenuItem(
-              glyph: AppGlyphs.devices,
-              label: appLocalizations.sendFromPhone,
-              onPressed: () => _toSendFromPhone(ref),
-            ),
-          CommonPopupMenuItem(
-            section: const CommonPopupMenuSection(),
-            glyph: AppGlyphs.customize,
-            label: appLocalizations.customProfile,
-            onPressed: () => _toAddCustom(context, ref),
-          ),
-        ],
-      ),
+    return ListView(
+      children: [
+        ListItem(
+          leading: const Icon(Symbols.qr_code_sharp),
+          title: Text(appLocalizations.qrcode),
+          subtitle: Text(appLocalizations.qrcodeDesc),
+          onTap: () => _toScan(ref),
+        ),
+        ListItem(
+          leading: const Icon(Symbols.note_add_sharp),
+          title: Text(appLocalizations.newProfile),
+          subtitle: Text(appLocalizations.newProfileDesc),
+          onTap: () => _createProfile(context, ref),
+        ),
+        ListItem(
+          leading: const Icon(Symbols.upload_file_sharp),
+          title: Text(appLocalizations.file),
+          subtitle: Text(appLocalizations.fileDesc),
+          onTap: () => _handleAddProfileFormFile(ref),
+        ),
+        ListItem(
+          leading: const Icon(Symbols.cloud_download_sharp),
+          title: Text(appLocalizations.url),
+          subtitle: Text(appLocalizations.urlDesc),
+          onTap: () => _toAdd(ref),
+        ),
+      ],
     );
   }
 }
 
-class _SendFromPhoneDialog extends StatefulWidget {
-  const _SendFromPhoneDialog();
+class URLFormDialog extends StatefulWidget {
+  const URLFormDialog({super.key});
 
   @override
-  State<_SendFromPhoneDialog> createState() => _SendFromPhoneDialogState();
+  State<URLFormDialog> createState() => _URLFormDialogState();
 }
 
-class _SendFromPhoneDialogState extends State<_SendFromPhoneDialog> {
-  LinkReceiver? _receiver;
-  bool _failed = false;
+class _URLFormDialogState extends State<URLFormDialog> {
+  final _urlController = TextEditingController();
+  final _ageSecretKeyController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  bool _obscureAgeSecretKey = true;
 
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_start());
+  void _handleAddProfileFormURL() {
+    if (!_formKey.currentState!.validate()) return;
+    final ageSecretKey = _ageSecretKeyController.text.trim();
+    Navigator.of(context).pop<({String url, String? ageSecretKey})>((
+      url: _urlController.text.trim(),
+      ageSecretKey: ageSecretKey.isEmpty ? null : ageSecretKey,
+    ));
   }
 
-  Future<void> _start() async {
-    final appLocalizations = currentAppLocalizations;
-    final receiver = await LinkReceiver.start((
-      title: appLocalizations.sendFromPhonePageTitle,
-      hint: appLocalizations.sendFromPhonePageHint,
-      send: appLocalizations.send,
-      sent: appLocalizations.sendFromPhonePageSent,
-      invalid: appLocalizations.invalidLinkTip,
-    )).catchError((Object _) => null);
-    if (!mounted) {
-      unawaited(receiver?.close());
-      return;
+  Future<void> _showAgeKeyGenerator() async {
+    await dialogs.showCommonDialog<void>(child: const AgeKeyGeneratorDialog());
+  }
+
+  Future<void> _pasteUrlFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    var text = data?.text?.trim() ?? '';
+    if (text.isEmpty || !mounted) return;
+    if (text.length > TextInputLimits.url) {
+      text = text.substring(0, TextInputLimits.url);
     }
-    setState(() {
-      _receiver = receiver;
-      _failed = receiver == null;
-    });
-    final link = await receiver?.link;
-    if (link != null && mounted) {
-      Navigator.of(context).pop(link);
-    }
+    _urlController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
   }
 
   @override
   void dispose() {
-    unawaited(_receiver?.close());
+    _urlController.dispose();
+    _ageSecretKeyController.dispose();
     super.dispose();
-  }
-
-  Widget _buildContent(BuildContext context) {
-    final appLocalizations = context.appLocalizations;
-    if (_failed) {
-      return Text(
-        appLocalizations.sendFromPhoneNoNetwork,
-        textAlign: TextAlign.center,
-      );
-    }
-    final address = _receiver?.address.toString();
-    if (address == null) {
-      return const SizedBox.square(
-        dimension: 96,
-        child: Center(child: CommonCircleLoading()),
-      );
-    }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      spacing: 16,
-      children: [
-        QrCodeView(data: address, size: 200),
-        SelectableText(address, textAlign: TextAlign.center),
-        Text(appLocalizations.sendFromPhoneTip, textAlign: TextAlign.center),
-      ],
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
     return CommonDialog(
-      title: context.appLocalizations.sendFromPhone,
+      title: appLocalizations.importFromURL,
       actions: [
+        IconButton(
+          tooltip: appLocalizations.ageKeyGenerateTitle,
+          onPressed: _showAgeKeyGenerator,
+          icon: const Icon(Symbols.key),
+        ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: Text(context.appLocalizations.cancel),
+          child: Text(appLocalizations.cancel),
+        ),
+        TextButton(
+          onPressed: _handleAddProfileFormURL,
+          child: Text(appLocalizations.submit),
         ),
       ],
-      child: _buildContent(context),
+      child: SizedBox(
+        width: 300,
+        child: Form(
+          key: _formKey,
+          child: Wrap(
+            runSpacing: 16,
+            children: [
+              TextFormField(
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _handleAddProfileFormURL(),
+                minLines: 1,
+                maxLines: 5,
+                inputFormatters: TextInputLimits.limit(TextInputLimits.url),
+                controller: _urlController,
+                decoration: InputDecoration(
+                  labelText: appLocalizations.url,
+                  suffixIcon: IconButton(
+                    tooltip: appLocalizations.paste,
+                    onPressed: _pasteUrlFromClipboard,
+                    icon: const Icon(Symbols.content_paste),
+                  ),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return appLocalizations.emptyTip('').trim();
+                  }
+                  if (!value.isUrl) {
+                    return appLocalizations.urlTip('').trim();
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _ageSecretKeyController,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _handleAddProfileFormURL(),
+                obscureText: _obscureAgeSecretKey,
+                decoration: InputDecoration(
+                  labelText: appLocalizations.ageSecretKeyOptional,
+                  suffixIcon: IconButton(
+                    tooltip: _obscureAgeSecretKey
+                        ? appLocalizations.showPassword
+                        : appLocalizations.hidePassword,
+                    onPressed: () {
+                      setState(() {
+                        _obscureAgeSecretKey = !_obscureAgeSecretKey;
+                      });
+                    },
+                    icon: Icon(
+                      _obscureAgeSecretKey
+                          ? Symbols.visibility
+                          : Symbols.visibility_off,
+                    ),
+                  ),
+                ),
+                validator: (value) {
+                  if (value?.isNotEmpty == true &&
+                      !value!.startsWith('AGE-SECRET-KEY-')) {
+                    return appLocalizations.ageSecretKeyInvalidValidationDesc;
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

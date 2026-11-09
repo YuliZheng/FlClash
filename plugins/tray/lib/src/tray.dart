@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart' as svg;
 import 'package:path/path.dart' as path;
 
 import 'tray_capabilities.dart';
@@ -16,6 +18,7 @@ const String _methodShow = 'show';
 const String _methodHide = 'hide';
 const String _methodSetTitle = 'setTitle';
 const String _methodOpenMenu = 'openMenu';
+const String _methodUpdateMenuItems = 'updateMenuItems';
 
 const String _eventIconActivated = 'onIconActivated';
 const String _eventMenuRequested = 'onMenuRequested';
@@ -27,6 +30,7 @@ final class Tray {
   }
 
   static final Tray instance = Tray._();
+  final _svgRepresentations = <String, List<Map<String, Object?>>>{};
 
   final MethodChannel _channel = const MethodChannel('tray');
 
@@ -36,9 +40,13 @@ final class Tray {
   Map<int, TrayMenuItem> _itemsById = const {};
   Future<void> _queue = Future<void>.value();
   String? _signature;
+  EncodedTray? _encoded;
+  Brightness? _brightness;
   String _title = '';
   String _requestedTitle = '';
   bool _isVisible = false;
+  bool _isMenuOpen = false;
+  ({TraySpec spec, EncodedTray encoded})? _pendingShow;
 
   Stream<TrayEvent> get events => _events.stream;
 
@@ -60,18 +68,27 @@ final class Tray {
     return _serialize(_hide);
   }
 
-  Future<void> openMenu() {
-    return _serialize(_openMenu);
+  Future<void> openMenu({bool bringAppToFront = false}) {
+    return _dispatch(() => _openMenu(bringAppToFront));
+  }
+
+  Future<bool> updateMenuItems(List<TrayMenuItemUpdate> updates) {
+    return _serialize(() => _updateMenuItems(updates));
   }
 
   @visibleForTesting
   void resetForTesting() {
+    _svgRepresentations.clear();
     _itemsById = const {};
     _queue = Future<void>.value();
     _signature = null;
+    _encoded = null;
+    _brightness = null;
     _title = '';
     _requestedTitle = '';
     _isVisible = false;
+    _isMenuOpen = false;
+    _pendingShow = null;
   }
 
   Future<T> _serialize<T>(Future<T> Function() action) {
@@ -86,13 +103,46 @@ final class Tray {
     return completer.future;
   }
 
-  Future<void> _show(TraySpec spec) async {
+  Future<T> _dispatch<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _queue = _queue.then((_) {
+      try {
+        action().then(completer.complete, onError: completer.completeError);
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _show(TraySpec spec, [EncodedTray? snapshot]) async {
     if (!capabilities.supported) {
       return;
     }
-    final encoded = TrayCodec.encode(spec);
+    _pendingShow = null;
+    final encoded = snapshot ?? TrayCodec.encode(spec);
     if (_isVisible && encoded.signature == _signature) {
       _itemsById = encoded.itemsById;
+      return;
+    }
+    final previous = _encoded;
+    if (_isVisible && previous != null && _brightness == spec.brightness) {
+      final updates = TrayCodec.menuUpdates(previous, encoded);
+      if (updates != null &&
+          (updates.isEmpty ||
+              await _channel.invokeMethod<bool>(
+                    _methodUpdateMenuItems,
+                    <String, Object?>{'updates': updates},
+                  ) ==
+                  true)) {
+        _itemsById = encoded.itemsById;
+        _signature = encoded.signature;
+        _encoded = encoded;
+        return;
+      }
+    }
+    if (_isMenuOpen) {
+      _pendingShow = (spec: spec, encoded: encoded);
       return;
     }
     final isApplied = await _channel
@@ -100,15 +150,19 @@ final class Tray {
           'id': _stableId,
           'icon': await _resolveIcon(spec.icon),
           'toolTip': encoded.toolTip,
+          'brightness': spec.brightness?.name,
           'title': _title,
           'menu': encoded.menu,
         });
     if (isApplied != true) {
       _signature = null;
+      _encoded = null;
       return;
     }
     _itemsById = encoded.itemsById;
     _signature = encoded.signature;
+    _encoded = encoded;
+    _brightness = spec.brightness;
     _isVisible = true;
   }
 
@@ -127,8 +181,10 @@ final class Tray {
   }
 
   Future<void> _hide() async {
+    _pendingShow = null;
     _itemsById = const {};
     _signature = null;
+    _encoded = null;
     _title = '';
     if (!_isVisible) {
       return;
@@ -137,17 +193,88 @@ final class Tray {
     await _channel.invokeMethod(_methodHide);
   }
 
-  Future<void> _openMenu() async {
-    if (!capabilities.menuControl || !_isVisible) {
+  Future<void> _openMenu(bool bringAppToFront) async {
+    if (!capabilities.menuControl || !_isVisible || _isMenuOpen) {
       return;
     }
-    await _channel.invokeMethod(_methodOpenMenu);
+    final tracksMenu = defaultTargetPlatform == TargetPlatform.windows;
+    if (tracksMenu) {
+      _isMenuOpen = true;
+    }
+    try {
+      await _channel.invokeMethod(_methodOpenMenu, <String, Object?>{
+        'bringAppToFront': bringAppToFront,
+      });
+    } finally {
+      if (tracksMenu) {
+        _isMenuOpen = false;
+        await _serialize(() async {
+          final pending = _pendingShow;
+          if (pending != null) {
+            await _show(pending.spec, pending.encoded);
+          }
+        });
+      }
+    }
+  }
+
+  Future<bool> _updateMenuItems(List<TrayMenuItemUpdate> updates) async {
+    if (!_isVisible) {
+      return false;
+    }
+    if (updates.isEmpty) {
+      return true;
+    }
+    final encodedUpdates = updates.map(_encodeMenuItemUpdate).toList();
+    final applied = await _channel.invokeMethod<bool>(
+      _methodUpdateMenuItems,
+      <String, Object?>{'updates': encodedUpdates},
+    );
+    if (applied == true) {
+      _signature = null;
+      final previous = _encoded;
+      if (previous != null) {
+        _encoded = TrayCodec.applyMenuUpdates(previous, encodedUpdates);
+      }
+      final pending = _pendingShow;
+      if (pending != null) {
+        _pendingShow = (
+          spec: pending.spec,
+          encoded: TrayCodec.applyMenuUpdates(pending.encoded, encodedUpdates),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Map<String, Object?> _encodeMenuItemUpdate(TrayMenuItemUpdate update) {
+    return <String, Object?>{
+      'key': update.key,
+      'label': ?update.label,
+      'enabled': ?update.enabled,
+      'checked': ?update.checked,
+      'sublabel': ?update.sublabel,
+      'sublabelStyle': ?update.sublabelStyle?.name,
+    };
   }
 
   Future<void> _onPlatformCall(MethodCall call) async {
     switch (call.method) {
       case _eventIconActivated:
-        _events.add(const TrayIconActivated());
+        final arguments = call.arguments;
+        final timestamp = arguments is Map
+            ? arguments['activationTimestamp']
+            : null;
+        final token = arguments is Map ? arguments['activationToken'] : null;
+        _events.add(
+          TrayIconActivated(
+            activationTimestamp: timestamp is int && timestamp > 0
+                ? timestamp
+                : null,
+            activationToken: token is String && token.isNotEmpty ? token : null,
+          ),
+        );
       case _eventMenuRequested:
         _events.add(const TrayMenuRequested());
       case _eventMenuItemSelected:
@@ -160,10 +287,23 @@ final class Tray {
         if (item == null) {
           return;
         }
+        final timestamp = arguments['activationTimestamp'];
+        final token = arguments['activationToken'];
+        final details = TrayMenuSelectionDetails(
+          activationTimestamp: timestamp is int && timestamp > 0
+              ? timestamp
+              : null,
+          activationToken: token is String && token.isNotEmpty ? token : null,
+        );
         switch (item) {
-          case TrayMenuAction(:final onSelected):
+          case TrayMenuAction(:final onSelected, :final onSelectedWithDetails):
+            onSelectedWithDetails?.call(details);
             onSelected?.call();
-          case TrayMenuCheckbox(:final onSelected):
+          case TrayMenuCheckbox(
+            :final onSelected,
+            :final onSelectedWithDetails,
+          ):
+            onSelectedWithDetails?.call(details);
             onSelected?.call();
           case TrayMenuSubmenu():
           case TrayMenuSeparator():
@@ -202,13 +342,55 @@ final class Tray {
     };
     switch (defaultTargetPlatform) {
       case TargetPlatform.macOS:
-        resolved['reps'] = await _loadRepresentations(icon.asset);
+        resolved['reps'] = icon.asset.toLowerCase().endsWith('.svg')
+            ? await _loadSvgRepresentations(icon)
+            : await _loadRepresentations(icon.asset);
       case TargetPlatform.linux:
         resolved['path'] = _largestBundledVariant(icon.asset);
       default:
         resolved['path'] = _bundledPath(icon.asset);
     }
     return resolved;
+  }
+
+  Future<List<Map<String, Object?>>> _loadSvgRepresentations(
+    TrayIcon icon,
+  ) async {
+    final key = '${icon.asset}:${icon.size}';
+    final cached = _svgRepresentations[key];
+    if (cached != null) return cached;
+    final source = await rootBundle.loadString(icon.asset);
+    final picture = await svg.vg.loadPicture(svg.SvgStringLoader(source), null);
+    final reps = <Map<String, Object?>>[];
+    try {
+      for (final scale in variantScales) {
+        final size = (icon.size * scale).round();
+        final recorder = ui.PictureRecorder();
+        ui.Canvas(recorder)
+          ..scale(size / picture.size.width, size / picture.size.height)
+          ..drawPicture(picture.picture);
+        final scaled = recorder.endRecording();
+        try {
+          final image = await scaled.toImage(size, size);
+          try {
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            reps.add({
+              'scale': scale,
+              'bytes': base64Encode(bytes!.buffer.asUint8List()),
+            });
+          } finally {
+            image.dispose();
+          }
+        } finally {
+          scaled.dispose();
+        }
+      }
+    } finally {
+      picture.picture.dispose();
+    }
+    return _svgRepresentations[key] = reps;
   }
 
   Future<List<Map<String, Object?>>> _loadRepresentations(String asset) async {

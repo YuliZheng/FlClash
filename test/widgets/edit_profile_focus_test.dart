@@ -1,21 +1,33 @@
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/profiles/edit.dart';
-import 'package:fl_clash/widgets/widgets.dart';
+import 'package:fl_clash/widgets/pop_scope.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
-import '../helpers/app_paths.dart';
-import '../helpers/test_app.dart';
-import '../helpers/test_profiles.dart';
+class _FakePathProvider extends PathProviderPlatform {
+  final String root;
+
+  _FakePathProvider(this.root);
+
+  @override
+  Future<String?> getTemporaryPath() async => root;
+
+  @override
+  Future<String?> getApplicationSupportPath() async => root;
+
+  @override
+  Future<String?> getApplicationCachePath() async => root;
+}
 
 /// The edit page disposes the profile by scheduling an auto-apply; keep that a
 /// no-op so the setup machinery never runs in a widget test.
@@ -32,7 +44,6 @@ Profile _urlProfile() =>
 Future<FocusNode> pumpEditProfile(
   WidgetTester tester, {
   Profile? profile,
-  List<Override> overrides = const [],
 }) async {
   tester.view.physicalSize = const Size(900, 800);
   tester.view.devicePixelRatio = 1;
@@ -40,10 +51,7 @@ Future<FocusNode> pumpEditProfile(
   addTearDown(tester.view.resetDevicePixelRatio);
 
   final container = ProviderContainer(
-    overrides: [
-      setupActionProvider.overrideWith(() => _NoopSetupAction()),
-      ...overrides,
-    ],
+    overrides: [setupActionProvider.overrideWith(() => _NoopSetupAction())],
   );
   addTearDown(container.dispose);
   // Unmount the widget tree before the container is disposed so State.dispose
@@ -53,7 +61,6 @@ Future<FocusNode> pumpEditProfile(
     await tester.pumpWidget(const SizedBox());
   });
   globalState.container = container;
-  container.read(viewSizeProvider.notifier).value = const Size(900, 800);
 
   final outsideFocus = FocusNode();
   addTearDown(outsideFocus.dispose);
@@ -62,15 +69,15 @@ Future<FocusNode> pumpEditProfile(
     UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
-        navigatorKey: globalState.navigatorKey,
         localizationsDelegates: const [
           AppLocalizations.delegate,
-          AppUiLocalizations.delegate,
           ...GlobalMaterialLocalizations.delegates,
         ],
         supportedLocales: AppLocalizations.delegate.supportedLocales,
         builder: (context, child) {
-          return wrapAppScopes(context, child!);
+          globalState.measure = Measure.of(context, 1);
+          globalState.theme = CommonTheme.of(context, 1);
+          return child!;
         },
         home: Scaffold(
           body: Column(
@@ -83,6 +90,7 @@ Future<FocusNode> pumpEditProfile(
                       child: Builder(
                         builder: (context) => Scaffold(
                           body: EditProfileView(
+                            context: context,
                             profile: profile ?? _urlProfile(),
                           ),
                         ),
@@ -106,9 +114,9 @@ Future<FocusNode> pumpEditProfile(
   return outsideFocus;
 }
 
-bool _isInAppBar() {
+bool _isFabFocused() {
   final context = FocusManager.instance.primaryFocus?.context;
-  return context?.findAncestorWidgetOfExactType<AppBar>() != null;
+  return context?.findAncestorWidgetOfExactType<FloatingActionButton>() != null;
 }
 
 bool _isTextFieldFocused() {
@@ -116,12 +124,17 @@ bool _isTextFieldFocused() {
   return context?.findAncestorWidgetOfExactType<EditableText>() != null;
 }
 
+bool _isSwitchFocused() {
+  final context = FocusManager.instance.primaryFocus?.context;
+  return context?.findAncestorWidgetOfExactType<Switch>() != null;
+}
+
 void main() {
   late Directory tempDir;
 
-  setUpAll(() async {
+  setUpAll(() {
     tempDir = Directory.systemTemp.createTempSync('edit_profile_focus_test');
-    await useAppPaths(tempDir);
+    PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
   });
 
   tearDownAll(() {
@@ -130,77 +143,64 @@ void main() {
     } catch (_) {}
   });
 
-  testWidgets('tabbing into the edit page reaches the form past its bar', (
+  testWidgets('tabbing into the edit page focuses the Save FAB first', (
     tester,
   ) async {
     final outsideFocus = await pumpEditProfile(tester);
     expect(FocusManager.instance.primaryFocus, outsideFocus);
 
-    for (var i = 0; i < 4 && !_isTextFieldFocused(); i++) {
-      if (i > 0) {
-        expect(_isInAppBar(), isTrue);
-      }
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+
+    expect(_isFabFocused(), isTrue);
+  });
+
+  testWidgets('allows predictive pop before the profile file changes', (
+    tester,
+  ) async {
+    await pumpEditProfile(tester);
+
+    expect(
+      tester.widget<CommonPopScope>(find.byType(CommonPopScope)).canPop,
+      isTrue,
+    );
+  });
+
+  testWidgets('tabbing reaches every form control after the Save FAB', (
+    tester,
+  ) async {
+    await pumpEditProfile(tester);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(_isFabFocused(), isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(_isTextFieldFocused(), isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(_isTextFieldFocused(), isTrue);
+
+    for (var i = 0; i < 8 && !_isSwitchFocused(); i++) {
       await tester.sendKeyEvent(LogicalKeyboardKey.tab);
       await tester.pump();
     }
-    expect(_isTextFieldFocused(), isTrue);
-    expect(find.byType(FloatingActionButton), findsNothing);
-    expect(find.byTooltip('Save'), findsOneWidget);
+    expect(_isSwitchFocused(), isTrue);
   });
 
-  testWidgets(
-    'the profile file row shows its size and update time without chips',
-    (tester) async {
-      await pumpEditProfile(tester);
-      final row = find.widgetWithText(
-        DecorationListItem,
-        currentAppLocalizations.profile,
-      );
-      for (var i = 0; i < 20 && row.evaluate().isEmpty; i++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 20)),
-        );
-        await tester.pump(const Duration(milliseconds: 400));
-      }
-      expect(row, findsOneWidget);
-      expect(
-        find.descendant(of: row, matching: find.byType(LastUpdateTimeText)),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(of: row, matching: find.text(0.traffic.show)),
-        findsOneWidget,
-      );
-      expect(find.byType(MetaChip), findsNothing);
-    },
-  );
-
-  testWidgets('saving with auto update off ignores an emptied interval', (
+  testWidgets('tabbing past the last control escapes to the enclosing scope', (
     tester,
   ) async {
-    final profile = _urlProfile();
-    await pumpEditProfile(
-      tester,
-      profile: profile,
-      overrides: [
-        profilesProvider.overrideWith(() => TestProfiles([profile])),
-      ],
-    );
-    final interval = find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField &&
-          widget.controller?.text == '${profile.autoUpdateDuration.inMinutes}',
-    );
+    final outsideFocus = await pumpEditProfile(tester);
 
-    await tester.enterText(interval, '');
-    await tester.tap(find.byType(CommonSwitch));
-    await tester.pump();
-    await tester.tap(find.byTooltip('Save'));
-    await tester.pump();
-
-    expect(tester.takeException(), isNull);
-    final saved = globalState.container.read(profilesProvider).single;
-    expect(saved.autoUpdate, isFalse);
-    expect(saved.autoUpdateDuration, profile.autoUpdateDuration);
+    var escaped = false;
+    for (var i = 0; i < 30 && !escaped; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      escaped = FocusManager.instance.primaryFocus == outsideFocus;
+    }
+    expect(escaped, isTrue);
   });
 }

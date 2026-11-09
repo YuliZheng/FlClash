@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dynamic_color/dynamic_color.dart';
-import 'package:fl_clash/common/boot_guard.dart';
-import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/common/launch.dart';
 import 'package:fl_clash/common/migration.dart';
@@ -15,7 +13,6 @@ import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/views/disclaimer.dart';
 import 'package:fl_clash/views/navigation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -32,8 +29,6 @@ class Bootstrap {
     _instance ??= Bootstrap._internal();
     return _instance!;
   }
-
-  BootDecision _bootDecision = const BootDecision();
 
   Future<ProviderContainer> init(int version) async {
     globalState.appEnv = const String.fromEnvironment(
@@ -73,16 +68,6 @@ class Bootstrap {
     );
   }
 
-  /// Runs before migration and the database: a copy started from another
-  /// install path gets past the platform's single-instance hand-off.
-  Future<void> _claimDataDirectory() async {
-    if (!system.isDesktop || await singleInstanceLock.acquire()) {
-      return;
-    }
-    commonPrint.log('another instance owns the data directory, exiting');
-    exit(0);
-  }
-
   Future<TonalPalette?> _getSystemPrimaryPalette() async {
     final raw = await DynamicColorPlugin.channel.invokeMethod<List<dynamic>>(
       DynamicColorPlugin.methodName,
@@ -99,21 +84,16 @@ class Bootstrap {
     int version,
     DynamicColorSeeds dynamicColor,
   ) async {
-    await _claimDataDirectory();
     globalState.packageInfo = await PackageInfo.fromPlatform();
-    var config = await migration.run();
-    _bootDecision = await bootGuard.evaluate(
-      profileId: config.currentProfileId,
+    final config = await migration.run();
+    foregroundTicker.updateSettings(
+      interval: Duration(
+        seconds: config.appSettingProps.foregroundTickerInterval,
+      ),
+      slowInterval: Duration(
+        seconds: config.appSettingProps.foregroundTickerIdleInterval,
+      ),
     );
-    if (_bootDecision.recovery == BootRecovery.clearProfile) {
-      config = config.copyWith(currentProfileId: null);
-      await preferences.saveConfig(config);
-    }
-    final patchClashConfig = config.patchClashConfig.ensureControllerSecret();
-    if (patchClashConfig != config.patchClashConfig) {
-      config = config.copyWith(patchClashConfig: patchClashConfig);
-      await preferences.saveConfig(config);
-    }
     final appState = AppState(
       brightness: WidgetsBinding.instance.platformDispatcher.platformBrightness,
       version: version,
@@ -138,7 +118,7 @@ class Bootstrap {
           accentColor: dynamicColor.accentColor,
         );
     final profiles = await database.profilesDao.query().get();
-    container.read(profilesProvider.notifier).reorder(profiles);
+    container.read(profilesProvider.notifier).setAndReorder(profiles);
     await AppLocalizations.load(
       getLocaleForString(config.appSettingProps.locale) ??
           WidgetsBinding.instance.platformDispatcher.locale,
@@ -162,12 +142,14 @@ class Bootstrap {
 
   Future<void> _initApp() async {
     unawaited(_container.read(systemActionProvider.notifier).updateTray());
-    unawaited(
-      _container.read(profilesActionProvider.notifier).autoUpdateProfiles(),
-    );
     unawaited(_container.read(commonActionProvider.notifier).autoCheckUpdate());
     unawaited(
-      autoLaunch?.updateStatus(_container.read(appSettingProvider).autoLaunch),
+      autoLaunch?.updateStatus(
+        isAutoLaunch: _container.read(appSettingProvider).autoLaunch,
+        isHighPriorityAutoLaunch: _container
+            .read(appSettingProvider)
+            .highPriorityAutoLaunch,
+      ),
     );
     if (!_container.read(appSettingProvider).silentLaunch) {
       unawaited(window?.show());
@@ -175,48 +157,11 @@ class Bootstrap {
       unawaited(window?.hide());
     }
     await _handleFailedPreference();
-    if (!await _handlerDisclaimer()) {
-      return;
-    }
-    await _showCrashRecoveryTip();
+    await _handlerDisclaimer();
     await _container.read(coreActionProvider.notifier).startCore();
-    if (!_bootDecision.isDegraded) {
-      await _container.read(setupActionProvider.notifier).initStatus();
-    }
+    await _container.read(setupActionProvider.notifier).initStatus();
     _container.read(initProvider.notifier).value = true;
-    unawaited(_container.read(resourcesActionProvider.notifier).autoUpdate());
-    await bootGuard.markRunning();
     unawaited(_container.read(locationPermissionsProvider.notifier).refresh());
-  }
-
-  Future<void> _showCrashRecoveryTip() async {
-    switch (_bootDecision.recovery) {
-      case BootRecovery.none:
-        return;
-      case BootRecovery.skipAutoSetup:
-        await dialogs.showAlert(
-          title: currentAppLocalizations.launchInterrupted,
-          dismissible: false,
-          message: TextSpan(text: currentAppLocalizations.launchInterruptedTip),
-        );
-      case BootRecovery.clearProfile:
-        await dialogs.showAlert(
-          title: currentAppLocalizations.crashDetected,
-          dismissible: false,
-          message: TextSpan(
-            text: currentAppLocalizations.crashDetectedTip(_failedProfileLabel),
-          ),
-        );
-    }
-  }
-
-  String get _failedProfileLabel {
-    final profileId = _bootDecision.failedProfileId;
-    if (profileId == null) {
-      return '';
-    }
-    final profile = _container.read(profilesProvider).getProfile(profileId);
-    return profile?.label.takeFirstValid(['$profileId']) ?? '$profileId';
   }
 
   Future<void> _handleFailedPreference() async {
@@ -233,34 +178,19 @@ class Bootstrap {
     await _container.read(systemActionProvider.notifier).handleExit(false);
   }
 
-  /// Unattended desktop installs, such as a container nobody watches, accept
-  /// up front: the core only starts after the disclaimer is accepted.
-  bool get _isDisclaimerAcceptedByEnvironment =>
-      system.isDesktop &&
-      Platform.environment['FLCLASH_ACCEPT_DISCLAIMER'] == '1';
-
-  /// Android's exit only finishes the activity, so Dart keeps running after
-  /// [SystemAction.handleExit] returns and must not go on to start the app.
-  Future<bool> _handlerDisclaimer() async {
-    final acceptedVersion = _container.read(
-      appSettingProvider.select((state) => state.acceptedDisclaimerVersion),
-    );
-    if (acceptedVersion >= disclaimerVersion) {
-      return true;
+  Future<void> _handlerDisclaimer() async {
+    if (_container.read(
+      appSettingProvider.select((state) => state.disclaimerAccepted),
+    )) {
+      return;
     }
-    final isDisclaimerAccepted =
-        _isDisclaimerAcceptedByEnvironment || await requestDisclaimerConsent();
+    final isDisclaimerAccepted = await dialogs.showDisclaimer();
     if (!isDisclaimerAccepted) {
       await _container.read(systemActionProvider.notifier).handleExit();
-      return false;
     }
     _container
         .read(appSettingProvider.notifier)
-        .update(
-          (state) =>
-              state.copyWith(acceptedDisclaimerVersion: disclaimerVersion),
-        );
-    return true;
+        .update((state) => state.copyWith(disclaimerAccepted: true));
   }
 }
 

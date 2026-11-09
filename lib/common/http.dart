@@ -13,13 +13,9 @@ class FlClashHttpOverrides extends HttpOverrides {
 
   FlClashHttpOverrides(this._container);
 
-  static const _coreRootsAsset =
-      'core/Clash.Meta/component/ca/ca-certificates.crt';
-
-  /// The bundle the core embeds; only release CI fills it.
   static Future<void> trustCoreRoots() async {
     try {
-      final data = await rootBundle.load(_coreRootsAsset);
+      final data = await rootBundle.load('assets/data/ca-certificates.crt');
       if (data.lengthInBytes == 0) return;
       SecurityContext.defaultContext.setTrustedCertificatesBytes(
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
@@ -41,7 +37,8 @@ class FlClashHttpOverrides extends HttpOverrides {
       return 'DIRECT';
     }
     final isStart = read(isStartProvider);
-    final suspend = read(suspendProvider);
+    final suspend = system.isIOS ? false : read(suspendProvider);
+    commonPrint.log('find $url proxy: $isStart');
     if (!isStart || suspend) return 'DIRECT';
     final mixedPort = read(
       patchClashConfigProvider.select((state) => state.mixedPort),

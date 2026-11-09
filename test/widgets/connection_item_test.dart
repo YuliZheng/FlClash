@@ -1,7 +1,9 @@
-import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/features/features.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:fl_clash/providers/config.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -39,6 +41,42 @@ TrackerInfo _tracker({
 }
 
 void main() {
+  testWidgets('proxy chain collapse setting updates connection rows', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      TestApp(
+        wrapInProviderScope: true,
+        homeBuilder: (child) => Scaffold(body: child),
+        child: TrackerInfoItem(
+          trackerInfo: _tracker(
+            chains: const ['last', 'middle-b', 'middle-a', 'first'],
+          ),
+          detailTitle: 'detail',
+        ),
+      ),
+    );
+    expect(find.text('...', findRichText: true), findsOneWidget);
+    expect(find.text('middle-a', findRichText: true), findsNothing);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(TrackerInfoItem)),
+    );
+    container
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(collapseProxyChains: false));
+    await tester.pump();
+    expect(find.text('...', findRichText: true), findsNothing);
+    expect(find.text('middle-a', findRichText: true), findsOneWidget);
+    expect(find.text('middle-b', findRichText: true), findsOneWidget);
+    container
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(collapseProxyChains: true));
+    await tester.pump();
+    expect(find.text('...', findRichText: true), findsOneWidget);
+    expect(find.text('middle-a', findRichText: true), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('TrackerInfoDetailView renders formatted connection fields', (
     tester,
   ) async {
@@ -72,11 +110,11 @@ void main() {
     expect(find.text('5.6.7.8:443'), findsOneWidget);
     expect(find.text('example.com'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('DIRECT'),
+      find.text('DIRECT', findRichText: true),
       100,
       scrollable: find.byType(Scrollable),
     );
-    expect(find.text('DIRECT'), findsOneWidget);
+    expect(find.text('DIRECT', findRichText: true), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -118,12 +156,23 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Proxy A'), findsOneWidget);
-    expect(find.text('Proxy B'), findsOneWidget);
+    expect(find.text('TCP'), findsOneWidget);
+    expect(find.text('DOMAIN-SUFFIX'), findsOneWidget);
+    expect(find.text('Proxy A', findRichText: true), findsOneWidget);
+    expect(find.text('Proxy B', findRichText: true), findsOneWidget);
+    expect(find.text('→'), findsNWidgets(2));
+    expect(
+      tester.getTopLeft(find.text('DOMAIN-SUFFIX')).dx,
+      lessThan(tester.getTopLeft(find.text('Proxy B', findRichText: true)).dx),
+    );
+    expect(
+      tester.getTopLeft(find.text('Proxy B', findRichText: true)).dx,
+      lessThan(tester.getTopLeft(find.text('Proxy A', findRichText: true)).dx),
+    );
 
-    await tester.tap(find.text('Proxy A'));
+    await tester.tap(find.text('Proxy A', findRichText: true));
     await tester.pump();
-    await tester.tap(find.text('Proxy B'));
+    await tester.tap(find.text('Proxy B', findRichText: true));
     await tester.pump();
 
     expect(clicked, ['Proxy A', 'Proxy B']);
@@ -131,7 +180,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('TrackerInfoItem reads from the rule to the node', (
+  testWidgets('TrackerInfoItem lays out destination and live speeds', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -139,100 +188,74 @@ void main() {
         wrapInProviderScope: true,
         homeBuilder: (child) => Scaffold(body: child),
         child: TrackerInfoItem(
+          isLive: true,
+          detailTitle: 'detail',
           trackerInfo: _tracker(
-            rulePayload: 'example.com',
-            process: 'chrome',
-            uid: 1000,
-            sourceIP: '1.2.3.4',
-            sourcePort: '8080',
+            host: 'example.com',
             destinationIP: '5.6.7.8',
             destinationPort: '443',
-            host: 'example.com',
-            chains: const ['Node', 'Group'],
-          ),
-          detailTitle: 'detail',
+            process: 'chrome',
+            sourceIP: '1.2.3.4',
+            sourcePort: '8080',
+          ).copyWith(uploadSpeed: 1024, downloadSpeed: 2048),
         ),
       ),
     );
     await tester.pump();
 
-    final rule = tester.getCenter(find.text('DOMAIN-SUFFIX(example.com)'));
-    final group = tester.getCenter(find.text('Group'));
-    final node = tester.getCenter(find.text('Node'));
-    expect(rule.dx, lessThan(group.dx));
-    expect(group.dx, lessThan(node.dx));
-    expect(find.text('example.com:443  5.6.7.8'), findsOneWidget);
-    expect(find.text('chrome(1000)  ·  1.2.3.4:8080'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(find.textContaining('example.com:443'), findsOneWidget);
+    expect(find.textContaining('5.6.7.8'), findsOneWidget);
+    expect(find.textContaining('chrome'), findsOneWidget);
+    expect(find.textContaining('1.2.3.4:8080'), findsOneWidget);
+    expect(find.textContaining('1KB/s'), findsOneWidget);
+    expect(find.textContaining('2KB/s'), findsOneWidget);
+    expect(find.byIcon(Symbols.arrow_upward), findsOneWidget);
+    expect(find.byIcon(Symbols.arrow_downward), findsOneWidget);
+    final header = tester.getRect(find.byType(RecordHeader));
+    final speed = tester.getRect(find.textContaining('2KB/s'));
+    expect(header.right - speed.right, lessThanOrEqualTo(1));
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('TrackerInfoItem shows speed only for a live connection', (
-    tester,
-  ) async {
-    Future<void> pumpItem({required bool isLive}) async {
-      await tester.pumpWidget(
-        TestApp(
-          wrapInProviderScope: true,
-          homeBuilder: (child) => Scaffold(body: child),
-          child: TrackerInfoItem(
-            key: ValueKey(isLive),
-            trackerInfo: _tracker(
-              host: 'example.com',
-            ).copyWith(uploadSpeed: 2048, downloadSpeed: 4096),
-            isLive: isLive,
-            action: const SizedBox(key: ValueKey('action')),
-            detailTitle: 'detail',
-          ),
-        ),
-      );
-      await tester.pump();
-    }
-
-    await pumpItem(isLive: false);
-    expect(find.text(DateTime(2026, 1, 1, 10, 30).showFull), findsOneWidget);
-    expect(find.textContaining('4KB/s'), findsNothing);
-
-    await pumpItem(isLive: true);
-    expect(find.text(DateTime(2026, 1, 1, 10, 30).showFull), findsNothing);
-    expect(find.textContaining('4KB/s'), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byType(RecordHeader),
-        matching: find.byKey(const ValueKey('action')),
-      ),
-      findsOneWidget,
-    );
-
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
-  testWidgets('TrackerInfoDetailView lists the chain from group to node', (
+  testWidgets('TrackerInfoItem keeps the close action outside the header', (
     tester,
   ) async {
     await tester.pumpWidget(
       TestApp(
+        wrapInProviderScope: true,
         homeBuilder: (child) => Scaffold(body: child),
-        child: SheetProvider(
-          type: SheetType.page,
-          child: TrackerInfoDetailView(
-            trackerInfo: _tracker(chains: const ['Node', 'Group']),
+        child: TrackerInfoItem(
+          isLive: true,
+          detailTitle: 'detail',
+          trackerInfo: _tracker(
+            chains: const ['Proxy A', 'Proxy B'],
+          ).copyWith(uploadSpeed: 1024, downloadSpeed: 2048),
+          trailing: IconButton(
+            onPressed: () {},
+            icon: const Icon(Symbols.close),
           ),
         ),
       ),
     );
     await tester.pump();
-    await tester.scrollUntilVisible(
-      find.text('Node'),
-      100,
-      scrollable: find.byType(Scrollable),
-    );
 
+    expect(find.byIcon(Symbols.close), findsOneWidget);
     expect(
-      tester.getCenter(find.text('Group')).dx,
-      lessThan(tester.getCenter(find.text('Node')).dx),
+      find.descendant(
+        of: find.byType(RecordHeader),
+        matching: find.byIcon(Symbols.close),
+      ),
+      findsNothing,
     );
+    final tile = tester.getRect(find.byType(ListTile));
+    final header = tester.getRect(find.byType(RecordHeader));
+    final button = tester.getRect(find.byType(IconButton));
+    final speed = tester.getRect(find.textContaining('2KB/s'));
+    expect(header.right - speed.right, lessThanOrEqualTo(1));
+    expect((header.right - button.right).abs(), lessThanOrEqualTo(1));
+    expect(button.top, greaterThanOrEqualTo(header.bottom));
+    expect(tile.bottom - button.bottom, lessThanOrEqualTo(16));
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

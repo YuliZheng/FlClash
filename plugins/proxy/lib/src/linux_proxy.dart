@@ -13,6 +13,7 @@ const _fallbackBackends = [LinuxProxyBackend.gnome, LinuxProxyBackend.kde];
 class LinuxProxy {
   final ProxyCommandRunner _commandRunner;
   final ProxyExecutableChecker _executableChecker;
+  bool _needsCleanup = false;
 
   LinuxProxy({
     required ProxyCommandRunner commandRunner,
@@ -33,6 +34,7 @@ class LinuxProxy {
     if (selection == null) {
       return false;
     }
+    _needsCleanup = true;
     return _commandRunner.run(
       LinuxProxyCommands.buildStartForBackend(
         port: port,
@@ -45,9 +47,12 @@ class LinuxProxy {
   }
 
   Future<bool> stop({
+    bool onlyIfNeeded = false,
     required String? desktop,
     required String? homeDir,
   }) async {
+    if (onlyIfNeeded && !_needsCleanup) return true;
+    _needsCleanup = true;
     if (homeDir == null || homeDir.isEmpty) {
       return false;
     }
@@ -55,13 +60,15 @@ class LinuxProxy {
     if (selection == null) {
       return false;
     }
-    return _commandRunner.run(
+    final stopped = await _commandRunner.run(
       LinuxProxyCommands.buildStopForBackend(
         homeDir: homeDir,
         backend: selection.backend,
         kdeConfigWriter: selection.executable,
       ),
     );
+    if (stopped) _needsCleanup = false;
+    return stopped;
   }
 
   Future<_LinuxBackendSelection?> _resolveBackend(String? desktop) async {
@@ -325,8 +332,17 @@ class LinuxProxyCommands {
           'Proxy Settings',
           '--key',
           '${type.name}Proxy',
-          '${type == _ProxyType.socks ? 'socks' : 'http'}://$proxyHost:$port',
+          _kdeProxyUrl(type, port),
         ]),
+      ProxyCommand(executable, [
+        '--file',
+        configFile,
+        '--group',
+        'Proxy Settings',
+        '--key',
+        'ReversedException',
+        'false',
+      ]),
       ProxyCommand(executable, [
         '--file',
         configFile,
@@ -338,6 +354,15 @@ class LinuxProxyCommands {
       ]),
       _kdeReparseConfiguration,
     ];
+  }
+
+  static String _kdeProxyUrl(_ProxyType type, int port) {
+    // kioslaverc scheme is the transport to the proxy. Mixed ports speak HTTP.
+    final scheme = switch (type) {
+      _ProxyType.socks => 'socks',
+      _ProxyType.http || _ProxyType.https => 'http',
+    };
+    return '$scheme://$proxyHost:$port';
   }
 
   static List<ProxyCommand> _buildKdeStop({

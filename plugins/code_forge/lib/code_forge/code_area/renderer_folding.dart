@@ -279,7 +279,7 @@ extension _RendererFolding on _CodeFieldRenderer {
   // Kept in step with `compute_all` in rust_api's editor/folds.rs.
   FoldRange? _computeFoldRangeForLine(int lineIndex) {
     final line = controller.getLineText(lineIndex);
-    final bracketEnd = _bracketFoldEnd(lineIndex, line);
+    final bracketEnd = _bracketFoldEnd(lineIndex);
     final indentEnd = line.trimRight().endsWith(':')
         ? _indentFoldEnd(lineIndex, line)
         : null;
@@ -289,21 +289,10 @@ extension _RendererFolding on _CodeFieldRenderer {
     return end == null ? null : FoldRange(lineIndex, end);
   }
 
-  Iterable<String> _linesFrom(int start) sync* {
-    final count = controller.lineCount;
-    for (var from = start, size = 16; from < count;) {
-      final to = min(from + size, count);
-      yield* controller.getLinesRange(from, to);
-      from = to;
-      size = min(size * 2, 1024);
-    }
-  }
-
-  int? _bracketFoldEnd(int lineIndex, String line) {
+  int? _bracketFoldEnd(int lineIndex) {
     final own = [0, 0, 0], nested = [0, 0, 0];
-    var i = lineIndex;
-    for (final text in [line].followedBy(_linesFrom(lineIndex + 1))) {
-      for (final unit in text.codeUnits) {
+    for (var i = lineIndex; i < controller.lineCount; i++) {
+      for (final unit in controller.getLineText(i).codeUnits) {
         final kind = switch (unit) {
           0x7B || 0x7D => 0,
           0x5B || 0x5D => 1,
@@ -321,7 +310,6 @@ extension _RendererFolding on _CodeFieldRenderer {
         }
       }
       if (own.every((count) => count == 0)) return null;
-      i++;
     }
     return null;
   }
@@ -350,10 +338,11 @@ extension _RendererFolding on _CodeFieldRenderer {
   int? _indentFoldEnd(int lineIndex, String line) {
     final startIndent = _measureLeadingIndentColumns(line);
     var endLine = lineIndex;
-    for (final (offset, next) in _linesFrom(lineIndex + 1).indexed) {
+    for (var j = lineIndex + 1; j < controller.lineCount; j++) {
+      final next = controller.getLineText(j);
       if (next.trim().isEmpty) continue;
       if (_measureLeadingIndentColumns(next) <= startIndent) break;
-      endLine = lineIndex + 1 + offset;
+      endLine = j;
     }
     return endLine > lineIndex ? endLine : null;
   }

@@ -4,6 +4,7 @@
 #include <ws2ipdef.h>
 
 #include "proxy_plugin.h"
+#include "include/proxy/proxy_plugin_c_api.h"
 
 // This must be included before many other Windows headers.
 #include <windows.h>
@@ -15,7 +16,7 @@
 #include <stdlib.h>
 #include <algorithm>
 #include <functional>
-#include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,43 @@ namespace
 constexpr int kMinProxyPort = 1;
 constexpr int kMaxProxyPort = 65535;
 constexpr wchar_t kProxyServerPrefix[] = L"127.0.0.1:";
+constexpr wchar_t kOwnershipKey[] = L"Software\\FlClash";
+constexpr wchar_t kOwnedProxyServerValue[] = L"SystemProxyServer";
+
+// Another local proxy can sit on the same address, so stale cleanup only
+// touches the server FlClash itself applied. The record outlives a crash.
+void RecordOwnedProxyServer(const std::wstring& server)
+{
+  RegSetKeyValueW(
+      HKEY_CURRENT_USER, kOwnershipKey, kOwnedProxyServerValue, REG_SZ,
+      server.c_str(),
+      static_cast<DWORD>((server.size() + 1) * sizeof(wchar_t)));
+}
+
+std::optional<std::wstring> OwnedProxyServer()
+{
+  DWORD size = 0;
+  if (RegGetValueW(
+          HKEY_CURRENT_USER, kOwnershipKey, kOwnedProxyServerValue,
+          RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS)
+  {
+    return std::nullopt;
+  }
+  std::wstring server(size / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(
+          HKEY_CURRENT_USER, kOwnershipKey, kOwnedProxyServerValue,
+          RRF_RT_REG_SZ, nullptr, server.data(), &size) != ERROR_SUCCESS)
+  {
+    return std::nullopt;
+  }
+  server.resize(wcsnlen(server.c_str(), server.size()));
+  return server;
+}
+
+void ForgetOwnedProxyServer()
+{
+  RegDeleteKeyValueW(HKEY_CURRENT_USER, kOwnershipKey, kOwnedProxyServerValue);
+}
 
 std::wstring Utf8ToWide(const std::string& value)
 {
@@ -163,6 +201,7 @@ bool startProxy(const int port, const flutter::EncodableList& bypassDomain)
   options[2].dwOption = INTERNET_PER_CONN_PROXY_BYPASS;
   options[2].Value.pszValue = bypassList.data();
 
+  RecordOwnedProxyServer(url);
   const bool optionsApplied = ApplyOptionsToConnections(list);
   const bool settingsNotified = NotifySettingsChanged();
   return optionsApplied && settingsNotified;
@@ -182,6 +221,10 @@ bool stopProxy()
 
   const bool optionsApplied = ApplyOptionsToConnections(list);
   const bool settingsNotified = NotifySettingsChanged();
+  if (optionsApplied)
+  {
+    ForgetOwnedProxyServer();
+  }
   return optionsApplied && settingsNotified;
 }
 
@@ -278,7 +321,7 @@ bool IsPortReleased(int port)
 
 bool ClearStaleProxyForConnection(
     LPTSTR connection,
-    std::map<int, bool>& releasedPorts)
+    const std::wstring& ownedServer)
 {
   std::vector<INTERNET_PER_CONN_OPTION> options(2);
   options[0].dwOption = INTERNET_PER_CONN_FLAGS;
@@ -305,17 +348,7 @@ bool ClearStaleProxyForConnection(
     GlobalFree(options[1].Value.pszValue);
   }
 
-  const auto port = ProxyPort(server);
-  if ((flags & PROXY_TYPE_PROXY) == 0 || !port)
-  {
-    return true;
-  }
-  auto [released, unchecked] = releasedPorts.try_emplace(*port, false);
-  if (unchecked)
-  {
-    released->second = IsPortReleased(*port);
-  }
-  if (!released->second)
+  if ((flags & PROXY_TYPE_PROXY) == 0 || server != ownedServer)
   {
     return true;
   }
@@ -334,13 +367,31 @@ namespace proxy
 
   bool ClearStaleProxy()
   {
-    std::map<int, bool> releasedPorts;
+    const auto owned = OwnedProxyServer();
+    if (!owned)
+    {
+      return true;
+    }
+    const auto port = ProxyPort(*owned);
+    if (!port)
+    {
+      ForgetOwnedProxyServer();
+      return true;
+    }
+    if (!IsPortReleased(*port))
+    {
+      return true;
+    }
     const bool cleared = ForEachConnection(
-        [&releasedPorts](LPTSTR connection)
+        [&owned](LPTSTR connection)
         {
-          return ClearStaleProxyForConnection(connection, releasedPorts);
+          return ClearStaleProxyForConnection(connection, *owned);
         });
     const bool settingsNotified = NotifySettingsChanged();
+    if (cleared)
+    {
+      ForgetOwnedProxyServer();
+    }
     return cleared && settingsNotified;
   }
 
@@ -365,7 +416,9 @@ namespace proxy
   }
 
   ProxyPlugin::ProxyPlugin(flutter::PluginRegistrarWindows* registrar)
-      : registrar_(registrar)
+      : registrar_(registrar),
+        release_proxy_message_(
+            RegisterWindowMessageW(PROXY_PLUGIN_RELEASE_PROXY_MESSAGE))
   {
     window_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
         [this](HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -392,9 +445,15 @@ namespace proxy
   std::optional<LRESULT> ProxyPlugin::HandleWindowProc(
       HWND window, UINT message, WPARAM wparam, LPARAM lparam)
   {
-    if (proxy_applied_ && IsSessionEnding(message, wparam))
+    const bool releasing =
+        release_proxy_message_ != 0 && message == release_proxy_message_;
+    if (proxy_applied_ && (releasing || IsSessionEnding(message, wparam)))
     {
       proxy_applied_ = !stopProxy();
+    }
+    if (releasing)
+    {
+      return 0;
     }
     return std::nullopt;
   }
@@ -405,8 +464,35 @@ namespace proxy
   {
     if (method_call.method_name() == "StopProxy")
     {
+      bool only_if_needed = false;
+      const auto* value = method_call.arguments();
+      if (value != nullptr && !std::holds_alternative<std::monostate>(*value))
+      {
+        const auto* arguments = std::get_if<flutter::EncodableMap>(value);
+        if (arguments == nullptr)
+        {
+          result->Error("bad_args", "StopProxy requires an argument map");
+          return;
+        }
+        const auto flag = arguments->find(flutter::EncodableValue("onlyIfNeeded"));
+        if (flag != arguments->end())
+        {
+          const auto* enabled = std::get_if<bool>(&flag->second);
+          if (enabled == nullptr)
+          {
+            result->Error("bad_args", "StopProxy onlyIfNeeded must be a bool");
+            return;
+          }
+          only_if_needed = *enabled;
+        }
+      }
+      if (only_if_needed && !proxy_applied_)
+      {
+        result->Success(true);
+        return;
+      }
       const bool stopped = stopProxy();
-      proxy_applied_ = proxy_applied_ && !stopped;
+      proxy_applied_ = !stopped;
       result->Success(stopped);
     }
     else if (method_call.method_name() == "StartProxy")

@@ -3,26 +3,24 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 
-Glyph _glyphOf(HotAction action) {
+IconData _iconOf(HotAction action) {
   return switch (action) {
-    HotAction.view => AppGlyphs.eye,
-    HotAction.start => AppGlyphs.playPause(0),
-    HotAction.exit => AppGlyphs.close,
-    HotAction.mode => AppGlyphs.split,
-    HotAction.ruleMode => AppGlyphs.rules,
-    HotAction.globalMode => AppGlyphs.language,
-    HotAction.directMode => AppGlyphs.target,
-    HotAction.proxy => AppGlyphs.shuffle,
-    HotAction.tun => AppGlyphs.vpn,
-    HotAction.copyEnv => AppGlyphs.code,
-    HotAction.delayTest => AppGlyphs.bolt,
-    HotAction.updateProfiles => AppGlyphs.sync,
+    HotAction.view => Symbols.visibility,
+    HotAction.start => Symbols.play_circle,
+    HotAction.exit => Symbols.close,
+    HotAction.mode => Symbols.alt_route,
+    HotAction.ruleMode => Symbols.rule_folder,
+    HotAction.globalMode => Symbols.public,
+    HotAction.directMode => Symbols.near_me,
+    HotAction.proxy => Symbols.shuffle,
+    HotAction.tun => Symbols.vpn_lock,
+    HotAction.copyEnv => Symbols.code,
   };
 }
 
@@ -44,10 +42,6 @@ List<(String, List<HotAction>)> _sections(AppLocalizations appLocalizations) {
     (
       appLocalizations.network,
       const [HotAction.proxy, HotAction.tun, HotAction.copyEnv],
-    ),
-    (
-      appLocalizations.proxies,
-      const [HotAction.delayTest, HotAction.updateProfiles],
     ),
   ];
 }
@@ -107,14 +101,14 @@ class HotKeyView extends StatelessWidget {
     return BaseScaffold(
       title: appLocalizations.hotkeyManagement,
       body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-          top: context.contentTopPadding,
-          bottom: 20 + context.bottomInset,
-        ),
+        padding: sectionPagePadding,
         children: [
-          const _HotKeyIntro(),
+          Padding(
+            padding: EdgeInsets.only(top: 8.ap),
+            child: const _HotKeyIntro(),
+          ),
           for (final (title, actions) in _sections(appLocalizations))
-            generateSection(
+            generateSectionV3(
               title: title,
               items: [
                 for (final action in actions)
@@ -136,19 +130,19 @@ class _HotKeyIntro extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: ShapeDecoration(
-        color: context.raisedSurfaceLevel.colorOf(colorScheme),
+        color: colorScheme.secondaryContainer.opacity50,
         shape: AppShape.xl,
       ),
       child: Row(
         spacing: 14,
         children: [
-          GlyphIcon(AppGlyphs.keyboard, color: colorScheme.primary),
+          Icon(Symbols.keyboard, color: colorScheme.onSecondaryContainer),
           Expanded(
             child: Text(
               context.appLocalizations.hotkeyDesc,
-              style: AppTextStyle.subheadline
-                  .of(context)
-                  .copyWith(color: colorScheme.onSurfaceVariant),
+              style: context.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSecondaryContainer,
+              ),
             ),
           ),
         ],
@@ -174,7 +168,7 @@ class _HotKeyItem extends ConsumerWidget {
     final key = hotKeyAction.key;
     return DecorationListItem(
       contentPadding: EdgeInsets.only(left: 16, right: key == null ? 16 : 6),
-      leading: GlyphIcon(_glyphOf(action)),
+      leading: Icon(_iconOf(action)),
       title: Text(action.label, maxLines: 2, overflow: TextOverflow.ellipsis),
       subtitle: failure == null
           ? null
@@ -182,17 +176,17 @@ class _HotKeyItem extends ConsumerWidget {
               message: failure,
               child: Text(
                 appLocalizations.hotkeyUnavailable,
-                style: AppTextStyle.footnote
-                    .of(context)
-                    .copyWith(color: colorScheme.error),
+                style: context.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.error,
+                ),
               ),
             ),
       trailing: key == null
           ? Text(
               appLocalizations.hotkeyNotSet,
-              style: AppTextStyle.subheadline
-                  .of(context)
-                  .copyWith(color: colorScheme.outline),
+              style: context.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.outline,
+              ),
             )
           : Row(
               mainAxisSize: MainAxisSize.min,
@@ -207,7 +201,7 @@ class _HotKeyItem extends ConsumerWidget {
                   onPressed: () {
                     _saveBinding(ref, HotKeyAction(action: action));
                   },
-                  icon: const GlyphIcon(AppGlyphs.close, size: 20),
+                  icon: const Icon(Symbols.close, size: 20),
                 ),
               ],
             ),
@@ -263,26 +257,34 @@ class _KeyCap extends StatelessWidget {
     final colorScheme = context.colorScheme;
     final side = isLarge ? 44.0 : 26.0;
     final foregroundColor = isError
-        ? colorScheme.onErrorContainer
+        ? colorScheme.error
         : colorScheme.onSurfaceVariant;
     final textStyle = isLarge
-        ? AppTextStyle.headline.of(context)
-        : AppTextStyle.caption1.of(context, emphasized: true);
+        ? context.textTheme.titleMedium
+        : context.textTheme.labelMedium;
     return Container(
       constraints: BoxConstraints(minWidth: side, minHeight: side),
       padding: EdgeInsets.symmetric(horizontal: isLarge ? 12 : 7),
       decoration: ShapeDecoration(
         color: isPlaceholder
             ? Colors.transparent
-            : isError
-            ? colorScheme.errorContainer
-            : context.raisedSurfaceLevel.colorOf(colorScheme),
-        shape: isLarge ? AppShape.md : AppShape.sm,
+            : colorScheme.surfaceContainerHighest,
+        shape: (isLarge ? AppShape.md : AppShape.sm).copyWith(
+          side: BorderSide(
+            color: isError ? colorScheme.error : colorScheme.outlineVariant,
+          ),
+        ),
       ),
       child: Align(
         widthFactor: 1,
         heightFactor: 1,
-        child: Text(label, style: textStyle.copyWith(color: foregroundColor)),
+        child: Text(
+          label,
+          style: textStyle?.copyWith(
+            fontWeight: FontWeight.w600,
+            color: foregroundColor,
+          ),
+        ),
       ),
     );
   }
@@ -327,7 +329,7 @@ class _HotKeyRecorderState extends ConsumerState<HotKeyRecorder> {
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     final recording = _recording;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      recording.value = false;
+      recording.stop();
     });
     super.dispose();
   }
@@ -402,26 +404,25 @@ class _HotKeyRecorderState extends ConsumerState<HotKeyRecorder> {
       content = Text(
         context.appLocalizations.pressKeyboard,
         textAlign: TextAlign.center,
-        style: AppTextStyle.body
-            .of(context)
-            .copyWith(color: colorScheme.onSurfaceVariant),
+        style: context.textTheme.bodyLarge?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+        ),
       );
     }
-    final level = context.raisedSurfaceLevel;
     return Container(
       constraints: const BoxConstraints(minHeight: 96),
       padding: const EdgeInsets.all(16),
       alignment: Alignment.center,
       decoration: ShapeDecoration(
-        color: level.colorOf(colorScheme),
+        color: colorScheme.surfaceContainerLow,
         shape: AppShape.md.copyWith(
           side: BorderSide(
             color: isError ? colorScheme.error : colorScheme.primary,
-            width: 2,
+            width: 1.5,
           ),
         ),
       ),
-      child: SurfaceScope(level: level, child: content),
+      child: content,
     );
   }
 
@@ -454,7 +455,7 @@ class _HotKeyRecorderState extends ConsumerState<HotKeyRecorder> {
       padding: const EdgeInsets.only(top: 12),
       child: Text(
         text,
-        style: AppTextStyle.subheadline.of(context).copyWith(color: color),
+        style: context.textTheme.bodyMedium?.copyWith(color: color),
       ),
     );
   }
@@ -481,24 +482,18 @@ class _HotKeyRecorderState extends ConsumerState<HotKeyRecorder> {
       autofocus: true,
       child: CommonDialog(
         title: widget.hotKeyAction.action.label,
-        hasFields: true,
         actions: [
+          if (widget.hotKeyAction.key != null)
+            TextButton(
+              onPressed: _handleRemove,
+              child: Text(appLocalizations.remove),
+            ),
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
             },
             child: Text(appLocalizations.cancel),
           ),
-          if (widget.hotKeyAction.key != null)
-            TextButton(
-              onPressed: _handleRemove,
-              style: ButtonStyle(
-                foregroundColor: WidgetStatePropertyAll(
-                  context.colorScheme.destructive,
-                ),
-              ),
-              child: Text(appLocalizations.remove),
-            ),
           TextButton(
             onPressed: isValid ? _handleSave : null,
             child: Text(appLocalizations.save),

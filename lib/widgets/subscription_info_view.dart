@@ -1,7 +1,9 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:fl_clash/ui/ui.dart';
 import 'package:material_ui/material_ui.dart';
+
+import 'list.dart';
+import 'text.dart';
 
 const _expireGap = 12.0;
 
@@ -26,22 +28,24 @@ class SubscriptionInfoView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final info = subscriptionInfo;
-    if (info == null || info.total == 0) {
+    if (info == null) {
       return const SizedBox.shrink();
     }
     final use = info.upload + info.download;
     final total = info.total;
-    final progress = (use / total).clamp(0.0, 1.0).toDouble();
+    final progress = total == 0
+        ? 0.0
+        : (use / total).clamp(0.0, 1.0).toDouble();
 
     final useShow = use.traffic.show;
-    final totalShow = total.traffic.show;
+    final totalShow = total == 0 ? '∞' : total.traffic.show;
     final expireShow = info.expire != 0
         ? DateTime.fromMillisecondsSinceEpoch(info.expire * 1000).show
         : context.appLocalizations.infiniteTime;
-    final valueStyle = AppTextStyle.subheadline
-        .of(context, emphasized: true)
-        .copyWith(color: context.colorScheme.onSurfaceVariant);
-    final metaStyle = AppTextStyle.footnote.of(context).toLight;
+    final valueStyle = context.textTheme.bodyMedium?.toSoftBold.copyWith(
+      color: context.colorScheme.onSurfaceVariant,
+    );
+    final metaStyle = context.textTheme.bodySmall?.toLight;
     final trafficLabel = '$useShow / $totalShow';
     final trafficText = Text(
       trafficLabel,
@@ -112,8 +116,9 @@ class SubscriptionInfoDetailView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.trafficUsage,
+            isFirst: true,
             items: [
               _buildItem(
                 label: appLocalizations.usedTraffic,
@@ -125,7 +130,7 @@ class SubscriptionInfoDetailView extends StatelessWidget {
               ),
             ],
           ),
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.expireTime,
             items: [_buildItem(value: expire)],
           ),

@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
 
-import 'app.dart';
 import 'config.dart';
 
 part 'generated/on_demand.g.dart';
@@ -18,13 +17,16 @@ class LocationPermissions extends _$LocationPermissions {
   bool _requesting = false;
   bool _autoRequested = false;
 
+  @protected
+  bool get supported => system.isMobile || system.isMacOS;
+
   @override
   WifiSsidPermission build() => WifiSsidPermission.denied;
 
   /// Only a request can tell a permanent denial apart, so a check leaves that
   /// answer in place until it sees the grant.
   Future<void> refresh() async {
-    if (ref.read(safeModeProvider)) {
+    if (!supported) {
       return;
     }
     final WifiSsidPermission permission;

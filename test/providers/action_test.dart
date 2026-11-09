@@ -4,7 +4,6 @@ import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/desktop/model.dart';
 import 'package:fl_clash/core/interface.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
@@ -12,7 +11,6 @@ import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/core.dart';
 import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/providers/state.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:riverpod/riverpod.dart';
@@ -52,7 +50,7 @@ void main() {
       expect(profile?.url, edited.url);
     });
 
-    test('updates selection and inserts the first profile', () {
+    test('updates selection, inserts first profile, and reorders profiles', () {
       final first = Profile.normal(label: 'First');
       final second = Profile.normal(label: 'Second');
       final container = ProviderContainer(
@@ -75,111 +73,55 @@ void main() {
       action.putProfile(second);
       expect(container.read(currentProfileIdProvider), second.id);
       expect(container.read(profilesProvider), [updatedFirst, second]);
+
+      action.reorder([second, updatedFirst]);
+      expect(container.read(profilesProvider), [second, updatedFirst]);
     });
 
-    test(
-      'skips profile updates that are disabled, fresh, or file-based',
-      () async {
-        final profiles = [
-          Profile.normal(label: 'Disabled').copyWith(autoUpdate: false),
-          Profile.normal(label: 'Fresh').copyWith(
-            autoUpdate: true,
-            lastUpdateDate: DateTime.now().add(const Duration(days: 1)),
-          ),
-          Profile.normal(label: 'File').copyWith(
-            autoUpdate: true,
-            lastUpdateDate: DateTime.now().subtract(const Duration(days: 1)),
-          ),
-        ];
-        final container = ProviderContainer(
-          overrides: [
-            currentProfileIdProvider.overrideWithBuild((_, _) => null),
-            profilesProvider.overrideWith(() => TestProfiles(profiles)),
-          ],
-        );
-        addTearDown(container.dispose);
-        final action = container.read(profilesActionProvider.notifier);
-
-        await action.autoUpdateProfiles();
-        await action.updateProfiles();
-
-        expect(container.read(profilesProvider), profiles);
-      },
-    );
-  });
-
-  group('ScriptsAction', () {
-    ProviderContainer scriptsContainer(
-      Profile profile,
-      _ApplyRecordingSetupAction setupAction,
-    ) {
+    test('bulk profile updates skip local files', () async {
+      final profiles = [
+        Profile.normal(label: 'Disabled').copyWith(autoUpdate: false),
+        Profile.normal(label: 'Fresh').copyWith(
+          autoUpdate: true,
+          lastUpdateDate: DateTime.now().add(const Duration(days: 1)),
+        ),
+        Profile.normal(label: 'File').copyWith(
+          autoUpdate: true,
+          lastUpdateDate: DateTime.now().subtract(const Duration(days: 1)),
+        ),
+      ];
       final container = ProviderContainer(
         overrides: [
-          currentProfileIdProvider.overrideWithBuild((_, _) => profile.id),
-          profilesProvider.overrideWith(() => TestProfiles([profile])),
-          scriptsProvider.overrideWith(_MemoryScripts.new),
-          setupActionProvider.overrideWith(() => setupAction),
+          currentProfileIdProvider.overrideWithBuild((_, _) => null),
+          profilesProvider.overrideWith(() => TestProfiles(profiles)),
         ],
       );
       addTearDown(container.dispose);
-      container.listen(scriptsProvider, (_, _) {});
-      return container;
-    }
+      final action = container.read(profilesActionProvider.notifier);
 
-    Script script(int id, {String? url}) => Script(
-      id: id,
-      label: 'Script $id',
-      lastUpdateTime: DateTime(2026),
-      url: url,
-    );
+      await action.updateProfiles();
 
-    test('putScript re-applies only a current profile running that script', () {
-      final profile = Profile.normal().copyWith(
-        extendType: ExtendType.script,
-        scriptId: 1,
-      );
-      final setupAction = _ApplyRecordingSetupAction();
-      final container = scriptsContainer(profile, setupAction);
-      final action = container.read(scriptsActionProvider.notifier);
-
-      action.putScript(script(2));
-      expect(setupAction.applyCount, 0);
-
-      action.putScript(script(1));
-      expect(setupAction.applyCount, 1);
-      expect(container.read(scriptsProvider).value?.map((item) => item.id), [
-        2,
-        1,
-      ]);
-
-      container
-          .read(profilesProvider.notifier)
-          .put(profile.copyWith(extendType: ExtendType.standard));
-      action.putScript(script(1));
-      expect(setupAction.applyCount, 1);
+      expect(container.read(profilesProvider), profiles);
     });
 
-    test(
-      'updateScript releases the updating key when the download fails',
-      () async {
-        final profile = Profile.normal().copyWith(
-          extendType: ExtendType.script,
-          scriptId: 1,
-        );
-        final setupAction = _ApplyRecordingSetupAction();
-        final container = scriptsContainer(profile, setupAction);
-        final remote = script(1, url: 'bad-url');
+    test('setProfileAndAutoApply stores a non-current profile', () {
+      final current = Profile.normal(label: 'Current');
+      final other = Profile.normal(label: 'Other');
+      final container = ProviderContainer(
+        overrides: [
+          currentProfileIdProvider.overrideWithBuild((_, _) => current.id),
+          profilesProvider.overrideWith(() => TestProfiles([current])),
+        ],
+      );
+      addTearDown(container.dispose);
 
-        await expectLater(
-          container.read(scriptsActionProvider.notifier).updateScript(remote),
-          throwsA(anything),
-        );
+      container
+          .read(profilesActionProvider.notifier)
+          .setProfileAndAutoApply(other);
 
-        expect(container.read(isUpdatingProvider(remote.updatingKey)), isFalse);
-        expect(container.read(scriptsProvider).value, isEmpty);
-        expect(setupAction.applyCount, 0);
-      },
-    );
+      expect(container.read(profilesProvider), [current, other]);
+      expect(container.read(currentProfileIdProvider), current.id);
+    });
   });
 
   group('GeoResourceAction', () {
@@ -212,6 +154,7 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           coreHandlerProvider.overrideWithValue(CoreController.scoped(core)),
+          setupActionProvider.overrideWith(_TestSetupAction.new),
         ],
       );
       addTearDown(container.dispose);
@@ -230,6 +173,7 @@ void main() {
       final container = ProviderContainer(
         overrides: [
           coreHandlerProvider.overrideWithValue(CoreController.scoped(core)),
+          setupActionProvider.overrideWith(_TestSetupAction.new),
         ],
       );
       addTearDown(container.dispose);
@@ -262,32 +206,6 @@ void main() {
   });
 
   group('CoreAction', () {
-    test(
-      'clears the DNS cache on a network change only while connected',
-      () async {
-        final core = _MockCoreHandlerInterface();
-        when(core.clearDnsCache).thenAnswer((_) async => true);
-        final container = ProviderContainer(
-          overrides: [
-            coreHandlerProvider.overrideWithValue(CoreController.scoped(core)),
-          ],
-        );
-        addTearDown(container.dispose);
-        final action = container.read(coreActionProvider.notifier);
-
-        await action.clearDnsCacheOnNetworkChange();
-        verifyNever(core.clearDnsCache);
-
-        container.read(coreStatusProvider.notifier).value =
-            CoreStatus.connected;
-        await action.clearDnsCacheOnNetworkChange();
-        verify(core.clearDnsCache).called(1);
-
-        when(core.clearDnsCache).thenThrow(StateError('disconnected'));
-        await expectLater(action.clearDnsCacheOnNetworkChange(), completes);
-      },
-    );
-
     test('applies the profile after restarting a stopped core', () async {
       final container = ProviderContainer(
         overrides: [
@@ -615,11 +533,6 @@ void main() {
             initProvider.overrideWithBuild((_, _) => true),
             commonActionProvider.overrideWith(_RaceCommonAction.new),
             setupActionProvider.overrideWith(_RaceSetupAction.new),
-            // Bypassing private addresses computes the routes in an isolate,
-            // which outlasts the zero delay below.
-            networkSettingProvider.overrideWithBuild(
-              (_, _) => const NetworkProps(bypassPrivateRoute: false),
-            ),
           ],
         );
         addTearDown(container.dispose);
@@ -825,13 +738,12 @@ void main() {
       );
     });
 
-    test('asks once while an authorization request is pending', () async {
-      final pending = Completer<AuthorizeCode>();
+    test('a granted authorization is not requested again', () async {
       late _AuthorizationSetupAction setupAction;
       final container = ProviderContainer(
         overrides: [
           setupActionProvider.overrideWith(() {
-            setupAction = _AuthorizationSetupAction([], pending: pending);
+            setupAction = _AuthorizationSetupAction([AuthorizeCode.success]);
             return setupAction;
           }),
         ],
@@ -839,22 +751,42 @@ void main() {
       addTearDown(container.dispose);
       container.read(setupActionProvider);
 
-      final first = setupAction.requestAdmin(true);
-      expect(
-        container.read(authorizedTunEnableProvider),
-        TunAuthorizationState.unauthorized,
-      );
-
+      expect(await setupAction.requestAdmin(true), isFalse);
       expect(await setupAction.requestAdmin(true), isTrue);
       expect(setupAction.authorizationRequestCount, 1);
-
-      pending.complete(AuthorizeCode.success);
-      expect(await first, isFalse);
     });
 
-    test('a failed authorization leaves tun and system DNS off', () async {
-      TestWidgetsFlutterBinding.ensureInitialized();
-      await AppLocalizations.load(const Locale('en'));
+    test('turning tun on after a failure asks again', () async {
+      late _AuthorizationSetupAction setupAction;
+      final container = ProviderContainer(
+        overrides: [
+          setupActionProvider.overrideWith(() {
+            setupAction = _AuthorizationSetupAction([
+              AuthorizeCode.error,
+              AuthorizeCode.success,
+            ]);
+            return setupAction;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith.tun(enable: true));
+      container.read(setupActionProvider);
+
+      expect(await setupAction.requestAdmin(true), isTrue);
+      expect(container.read(patchClashConfigProvider).tun.enable, isFalse);
+
+      expect(await setupAction.requestAdmin(true), isFalse);
+      expect(setupAction.authorizationRequestCount, 2);
+      expect(
+        container.read(authorizedTunEnableProvider),
+        TunAuthorizationState.authorized,
+      );
+    });
+
+    test('keeps tun disabled after a failed authorization', () async {
       late _AuthorizationSetupAction setupAction;
       final container = ProviderContainer(
         overrides: [
@@ -870,17 +802,12 @@ void main() {
           .update((state) => state.copyWith.tun(enable: true));
       container.read(setupActionProvider);
 
-      expect(await setupAction.requestAdmin(true), isTrue);
+      await setupAction.requestAdmin(true);
 
-      expect(container.read(patchClashConfigProvider).tun.enable, isFalse);
-      expect(container.read(shouldPatchSystemDnsProvider), isFalse);
       expect(
-        await setupAction.requestAdmin(
-          container.read(patchClashConfigProvider).tun.enable,
-        ),
-        isTrue,
+        container.read(authorizedTunEnableProvider),
+        isNot(TunAuthorizationState.authorized),
       );
-      expect(setupAction.authorizationRequestCount, 1);
     });
   });
 }
@@ -906,25 +833,6 @@ class _TestCoreAction extends CoreAction {
   Future<CoreLifecycleResult> restartLifecycle() {
     lifecycleRestartCount++;
     return restartCompleter?.future ?? Future.value(_restartResult);
-  }
-}
-
-class _ApplyRecordingSetupAction extends SetupAction {
-  int applyCount = 0;
-
-  @override
-  void applyProfileDebounce({bool silence = false, bool force = false}) {
-    applyCount++;
-  }
-}
-
-class _MemoryScripts extends Scripts {
-  @override
-  Stream<List<Script>> build() => Stream.value(const []);
-
-  @override
-  void put(Script script) {
-    state = AsyncData([...value.where((item) => item.id != script.id), script]);
   }
 }
 
@@ -983,19 +891,13 @@ final _restartFailure = Exception('restart failed');
 
 class _AuthorizationSetupAction extends SetupAction {
   final List<AuthorizeCode> authorizationResults;
-  final Completer<AuthorizeCode>? pending;
   int authorizationRequestCount = 0;
 
-  _AuthorizationSetupAction(this.authorizationResults, {this.pending});
+  _AuthorizationSetupAction(this.authorizationResults);
 
   @override
   Future<AuthorizeCode> authorizeCore() async {
-    final index = authorizationRequestCount++;
-    final pending = this.pending;
-    if (pending != null) {
-      return pending.future;
-    }
-    return authorizationResults[index];
+    return authorizationResults[authorizationRequestCount++];
   }
 }
 

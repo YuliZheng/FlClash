@@ -19,14 +19,9 @@ bool buildsAssets(BuildInput input) =>
     input.userDefines['build_assets'] != false;
 
 final class CoreBuilder implements Builder {
-  const CoreBuilder({
-    CoreBuildFunction build = buildPlatform,
-    Architecture? hostArchitecture,
-  }) : _build = build,
-       _hostArchitecture = hostArchitecture;
+  const CoreBuilder({CoreBuildFunction build = buildPlatform}) : _build = build;
 
   final CoreBuildFunction _build;
-  final Architecture? _hostArchitecture;
 
   @override
   Future<void> run({
@@ -96,8 +91,12 @@ final class CoreBuilder implements Builder {
   BuildRequest? requestFor(BuildInput input) {
     if (!input.config.buildCodeAssets) return null;
     final code = input.config.code;
-    // Android's Core is the gomobile AAR the :core Gradle module builds.
+    if (code.targetOS == OS.iOS && code.iOS.targetSdk != IOSSdk.iPhoneOS) {
+      throw BuildException('The iOS VPN Core requires an arm64 device build');
+    }
     final platform = switch (code.targetOS) {
+      OS.android => 'android',
+      OS.iOS => 'ios',
       OS.linux => 'linux',
       OS.macOS => 'macos',
       OS.windows => 'windows',
@@ -110,19 +109,18 @@ final class CoreBuilder implements Builder {
       Architecture.x64 => 'amd64',
       final other => throw BuildException('No Core build for $platform $other'),
     };
-    final target = Target.resolve(platform: platform, goarch: goarch);
-
-    final host = _hostArchitecture ?? Architecture.current;
-    if (code.targetOS == OS.macOS && code.targetArchitecture != host) {
-      _log.info('Skipping non-host macOS slice: $target');
-      return null;
-    }
-
     final rootDir = repositoryRoot(input);
+    final target = Target.resolve(
+      platform: platform,
+      goarch: goarch,
+    ).withGoAmd64UserDefine(input.userDefines['goamd64']);
     return BuildRequest(
       rootDir: rootDir,
       harnessDir: p.join(p.fromUri(input.packageRoot), 'setup_hooks'),
       target: target,
+      androidToolchain: code.targetOS == OS.android
+          ? _androidToolchain(code)
+          : null,
     );
   }
 
@@ -138,5 +136,20 @@ final class CoreBuilder implements Builder {
       );
     }
     return rootDir;
+  }
+
+  AndroidToolchain _androidToolchain(CodeConfig code) {
+    final compiler = code.cCompiler?.compiler;
+    if (compiler == null) {
+      throw InfraError(
+        message:
+            'Flutter passed no NDK C compiler to the setup build hook; '
+            'install the NDK version android/gradle/libs.versions.toml names',
+      );
+    }
+    return AndroidToolchain(
+      clangDirectory: p.dirname(p.fromUri(compiler)),
+      apiLevel: code.android.targetNdkApi,
+    );
   }
 }

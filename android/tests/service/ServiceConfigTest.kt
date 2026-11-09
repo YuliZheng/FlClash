@@ -1,9 +1,9 @@
-package com.follow.clash.service
+package cc.chenx.flclash.service
 
-import com.follow.clash.common.AccessControlMode
-import com.follow.clash.service.models.AccessControlProps
-import com.follow.clash.service.models.NotificationParams
-import com.follow.clash.service.models.VpnOptions
+import cc.chenx.flclash.common.AccessControlMode
+import cc.chenx.flclash.service.models.AccessControlProps
+import cc.chenx.flclash.service.models.NotificationParams
+import cc.chenx.flclash.service.models.VpnOptions
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -14,7 +14,7 @@ private fun vpnOptions(port: Int) = VpnOptions(
     enable = true,
     port = port,
     ipv6 = false,
-    dnsHijacking = true,
+    captureDns = true,
     accessControlProps = AccessControlProps(
         enable = true,
         mode = AccessControlMode.REJECT_SELECTED,
@@ -23,20 +23,24 @@ private fun vpnOptions(port: Int) = VpnOptions(
     ),
     allowBypass = true,
     systemProxy = false,
+    suspendSupport = null,
     bypassDomain = listOf("example.test"),
     stack = "system",
+    mtu = null,
     routeAddress = listOf("0.0.0.0/0"),
+    disableIcmpForwarding = false,
+    endpointIndependentNat = false,
 )
 
 class ServiceConfigTest {
     @Test
-    fun `notification params default to the app name and stop label`() {
+    fun `notification params default to the app name and disabled traffic details`() {
         val defaults = NotificationParams()
 
         assertEquals("FlClash", defaults.title)
-        assertEquals("STOP", defaults.stopText)
         assertEquals(false, defaults.onlyStatisticsProxy)
         assertEquals(true, defaults.showStopAction)
+        assertEquals(false, defaults.networkSpeedNotification)
     }
 
     @Test
@@ -54,8 +58,8 @@ class ServiceConfigTest {
     fun `updateNotificationParams emits through the state flow`() = runTest {
         val params = NotificationParams(
             title = "Profile",
-            stopText = "Halt",
             onlyStatisticsProxy = true,
+            networkSpeedNotification = true,
         )
 
         ServiceConfig.updateNotificationParams(params)

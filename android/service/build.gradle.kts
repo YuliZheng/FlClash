@@ -5,8 +5,9 @@ plugins {
 }
 
 android {
-    namespace = "com.follow.clash.service"
+    namespace = "cc.chenx.flclash.service"
     compileSdk = libs.versions.compileSdk.get().toInt()
+    compileSdkMinor = libs.versions.compileSdkMinor.get().toInt()
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()

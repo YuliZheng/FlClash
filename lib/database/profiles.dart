@@ -7,19 +7,15 @@ class Profiles extends Table {
 
   IntColumn get id => integer()();
 
-  TextColumn get type => textEnum<ProfileType>()();
-
   TextColumn get label => text()();
 
   TextColumn get currentGroupName => text().nullable()();
 
   TextColumn get url => text()();
 
-  TextColumn get ageSecretKey => text().nullable()();
-
   DateTimeColumn get lastUpdateDate => dateTime().nullable()();
 
-  TextColumn get extendType => textEnum<ExtendType>()();
+  TextColumn get overwriteType => textEnum<OverwriteType>()();
 
   IntColumn get scriptId => integer().nullable()();
 
@@ -36,34 +32,12 @@ class Profiles extends Table {
 
   TextColumn get unfoldSet => text().map(const StringSetConverter())();
 
-  IntColumn get order => integer().nullable()();
+  TextColumn get ageSecretKey => text().nullable()();
 
-  TextColumn get overrides =>
-      text().map(const ProfileOverridesConverter()).nullable()();
+  IntColumn get order => integer().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
-}
-
-class ProfileOverridesConverter
-    extends TypeConverter<ProfileOverrides?, String?> {
-  const ProfileOverridesConverter();
-
-  @override
-  ProfileOverrides? fromSql(String? fromDb) {
-    if (fromDb == null) return null;
-    return decodeOrRestoreDefault(
-      'profile overrides',
-      () => ProfileOverrides.safeFromJson(json.decode(fromDb)),
-      () => null,
-    );
-  }
-
-  @override
-  String? toSql(ProfileOverrides? value) {
-    if (value == null || value == const ProfileOverrides()) return null;
-    return json.encode(value.toJson());
-  }
 }
 
 class SubscriptionInfoConverter
@@ -73,11 +47,7 @@ class SubscriptionInfoConverter
   @override
   SubscriptionInfo? fromSql(String? fromDb) {
     if (fromDb == null) return null;
-    return decodeOrRestoreDefault(
-      'subscription info',
-      () => SubscriptionInfo.fromJson(json.decode(fromDb)),
-      () => null,
-    );
+    return SubscriptionInfo.fromJson(json.decode(fromDb));
   }
 
   @override
@@ -92,22 +62,13 @@ class ProfilesDao extends DatabaseAccessor<Database> with _$ProfilesDaoMixin {
   ProfilesDao(super.attachedDatabase);
 
   Selectable<Profile> query() {
-    return profiles.readable(
-      (row) => row.toProfile(),
-      orderBy: [
-        (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
-        (t) => OrderingTerm.asc(t.id),
-      ],
-    );
+    final stmt = profiles.select();
+    stmt.orderBy([
+      (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
+      (t) => OrderingTerm.asc(t.id),
+    ]);
+    return stmt.map((item) => item.toProfile());
   }
-
-  /// The order [query] reads profiles back in.
-  static int compare(Profile a, Profile b) => switch ((a.order, b.order)) {
-    (final x?, final y?) when x != y => x.compareTo(y),
-    (null, _?) => 1,
-    (_?, null) => -1,
-    _ => a.id.compareTo(b.id),
-  };
 
   Future<void> setAll(Iterable<Profile> profiles) async {
     await batch((b) async {
@@ -130,23 +91,10 @@ class ProfilesDao extends DatabaseAccessor<Database> with _$ProfilesDaoMixin {
     batch.insertAllOnConflictUpdate(profiles, items);
   }
 
-  Selectable<int> ids() {
+  Selectable<String> fileNames() {
     final query = profiles.selectOnly()..addColumns([profiles.id]);
-    return query.map((row) => row.read(profiles.id)!);
+    return query.map((row) => '${row.read(profiles.id)}.yaml');
   }
-
-  Selectable<int> customIds() {
-    final query = profiles.selectOnly()
-      ..addColumns([profiles.id])
-      ..where(profiles.type.equalsValue(ProfileType.custom));
-    return query.map((row) => row.read(profiles.id)!);
-  }
-
-  Future<Profile?> get(int id) => profiles
-      .readable((row) => row.toProfile(), where: (t) => t.id.equals(id))
-      .getSingleOrNull();
-
-  Selectable<String> fileNames() => ids().map((id) => '$id.yaml');
 
   void setAllWithBatch(Batch batch, Iterable<Profile> profiles) {
     final List<ProfilesCompanion> items = [];
@@ -164,22 +112,20 @@ extension RawProfilExt on RawProfile {
   Profile toProfile() {
     return Profile(
       id: id,
-      type: type,
       label: label,
       currentGroupName: currentGroupName,
       url: url,
-      ageSecretKey: ageSecretKey ?? '',
       lastUpdateDate: lastUpdateDate,
       autoUpdateDuration: Duration(milliseconds: autoUpdateDurationMillis),
       subscriptionInfo: subscriptionInfo,
       autoUpdate: autoUpdate,
       selectedMap: selectedMap,
       unfoldSet: unfoldSet,
-      extendType: extendType,
+      overwriteType: overwriteType,
       scriptId: scriptId,
       matchTarget: matchTarget,
       order: order,
-      overrides: overrides ?? const ProfileOverrides(),
+      ageSecretKey: ageSecretKey,
     );
   }
 }
@@ -188,22 +134,20 @@ extension ProfilesCompanionExt on Profile {
   ProfilesCompanion toCompanion([int? order]) {
     return ProfilesCompanion.insert(
       id: Value(id),
-      type: type,
       label: label,
       currentGroupName: Value(currentGroupName),
       url: url,
-      ageSecretKey: Value(ageSecretKey.isEmpty ? null : ageSecretKey),
       lastUpdateDate: Value(lastUpdateDate),
       autoUpdateDurationMillis: autoUpdateDuration.inMilliseconds,
       subscriptionInfo: Value(subscriptionInfo),
       autoUpdate: autoUpdate,
       selectedMap: selectedMap,
       unfoldSet: unfoldSet,
-      extendType: extendType,
+      overwriteType: overwriteType,
       scriptId: Value(scriptId),
       matchTarget: Value(matchTarget),
       order: Value(order ?? this.order),
-      overrides: Value(overrides),
+      ageSecretKey: Value(ageSecretKey),
     );
   }
 }

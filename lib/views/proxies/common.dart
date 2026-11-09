@@ -1,39 +1,30 @@
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/typography.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-const proxyGridSpacing = 8.0;
-
-double get listHeaderHeight {
+double getListHeaderHeight(ProxiesListHeaderStyle style) {
   final measure = globalState.measure;
-  return 20 +
-      measure.textHeight(AppTextStyle.callout) +
-      2 +
-      measure.textHeight(AppTextStyle.caption1) +
-      2;
+  return switch (style) {
+    ProxiesListHeaderStyle.loose =>
+      20 + measure.titleMediumHeight + 4 + measure.bodyMediumHeight + 2,
+    ProxiesListHeaderStyle.standard =>
+      18 + measure.titleSmallHeight + 3 + measure.labelSmallHeight + 3,
+    ProxiesListHeaderStyle.tight => 24 + measure.titleSmallHeight,
+  };
 }
 
 double getItemHeight(ProxyCardType proxyCardType) {
   final measure = globalState.measure;
   final baseHeight =
-      16 +
-      measure.textHeight(AppTextStyle.subheadline) * 2 +
-      measure.textHeight(AppTextStyle.footnote) +
-      8 +
-      4;
+      16 + measure.bodyMediumHeight * 2 + measure.bodySmallHeight + 8 + 4;
   return switch (proxyCardType) {
-    ProxyCardType.loose =>
-      baseHeight + measure.textHeight(AppTextStyle.caption2) + 6,
-    ProxyCardType.standard => baseHeight,
-    ProxyCardType.compact =>
-      baseHeight - measure.textHeight(AppTextStyle.subheadline),
+    ProxyCardType.standard => baseHeight + measure.labelSmallHeight + 6,
+    ProxyCardType.shrink => baseHeight,
+    ProxyCardType.min => baseHeight - measure.bodyMediumHeight,
   };
 }
-
-double getRowExtent(ProxyCardType proxyCardType) =>
-    getItemHeight(proxyCardType) + proxyGridSpacing;
 
 class GroupOffsets {
   const GroupOffsets(this.groups, this.offsets);
@@ -52,29 +43,24 @@ class GroupOffsets {
     }
     return offsets[index];
   }
+
+  Group? groupOf(String groupName) => groups.getGroup(groupName);
 }
 
-double? selectedRowOffset({
+double getScrollToSelectedOffset({
+  required WidgetRef ref,
+  required String groupName,
   required List<Proxy> proxies,
-  required String? selectedProxyName,
   required int columns,
-  required double rowExtent,
 }) {
-  final index = proxies.indexWhere((proxy) => proxy.name == selectedProxyName);
-  if (index < 0) {
-    return null;
-  }
-  return (index ~/ columns) * rowExtent;
-}
-
-void animateScrollTo(ScrollController controller, double offset) {
-  if (!controller.hasClients) {
-    return;
-  }
-  final position = controller.position;
-  controller.animateTo(
-    offset.clamp(position.minScrollExtent, position.maxScrollExtent),
-    duration: const Duration(milliseconds: 300),
-    curve: Curves.easeOutCubic,
+  final proxyCardType = ref.read(
+    proxiesStyleSettingProvider.select((state) => state.cardType),
   );
+  final selectedProxyName = ref.read(selectedProxyNameProvider(groupName));
+  final findSelectedIndex = proxies.indexWhere(
+    (proxy) => proxy.name == selectedProxyName,
+  );
+  final selectedIndex = findSelectedIndex != -1 ? findSelectedIndex : 0;
+  final rows = (selectedIndex / columns).floor();
+  return rows * getItemHeight(proxyCardType) + (rows - 1) * 8;
 }

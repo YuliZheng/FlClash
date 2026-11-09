@@ -10,12 +10,10 @@ void main() {
       final json = {
         'selected-map': {'G1': 'P1'},
         'test-url': 'http://test.com',
-        'skip-cert-verify': true,
       };
       final params = SetupParams.fromJson(json);
       expect(params.selectedMap, {'G1': 'P1'});
       expect(params.testUrl, 'http://test.com');
-      expect(params.skipCertVerify, isTrue);
     });
 
     test('toJson uses snake-case keys', () {
@@ -26,7 +24,6 @@ void main() {
       final json = params.toJson();
       expect(json['selected-map'], {'G1': 'P1'});
       expect(json['test-url'], 'http://t.com');
-      expect(json['skip-cert-verify'], isFalse);
     });
   });
 
@@ -42,6 +39,7 @@ void main() {
         'ipv6': false,
         'tcp-concurrent': false,
         'external-controller': '',
+        'secret': '',
         'unified-delay': false,
       };
       final params = UpdateParams.fromJson(json);
@@ -64,100 +62,6 @@ void main() {
     });
   });
 
-  group('VpnOptions.effective', () {
-    const options = VpnOptions(
-      enable: true,
-      port: 7890,
-      ipv6: false,
-      dnsHijacking: false,
-      accessControlProps: AccessControlProps(
-        enable: true,
-        mode: AccessControlMode.acceptSelected,
-        acceptList: ['a.app'],
-        rejectList: ['b.app'],
-      ),
-      allowBypass: true,
-      systemProxy: true,
-      bypassDomain: ['localhost'],
-      stack: 'mixed',
-      routeAddress: ['0.0.0.0/0'],
-      mtu: 9000,
-    );
-
-    test('tells apart every option the tunnel is built from', () {
-      final changes = [
-        options.copyWith(port: 7891),
-        options.copyWith(ipv6: true),
-        options.copyWith(dnsHijacking: true),
-        options.copyWith(allowBypass: false),
-        options.copyWith(systemProxy: false),
-        options.copyWith(bypassDomain: const ['example.com']),
-        options.copyWith(stack: 'gvisor'),
-        options.copyWith(routeAddress: const ['10.0.0.0/8']),
-        options.copyWith(mtu: 1500),
-        options.copyWith(congestionController: 'bbr'),
-        options.copyWith(
-          accessControlProps: options.accessControlProps.copyWith(
-            acceptList: const ['c.app'],
-          ),
-        ),
-        options.copyWith(enable: false),
-      ];
-
-      for (final changed in changes) {
-        expect(changed.effective, isNot(options.effective));
-      }
-    });
-
-    test('ignores how the app list is shown and the list not applied', () {
-      final changed = options.copyWith(
-        accessControlProps: options.accessControlProps.copyWith(
-          rejectList: const ['c.app'],
-          sort: AccessSortType.name,
-          isFilterSystemApp: false,
-        ),
-      );
-
-      expect(changed.effective, options.effective);
-    });
-
-    test('ignores the proxy port and bypass list without a system proxy', () {
-      final withoutProxy = options.copyWith(systemProxy: false);
-
-      expect(
-        withoutProxy.copyWith(port: 7891, bypassDomain: const []).effective,
-        withoutProxy.effective,
-      );
-    });
-
-    test('ignores the access lists while access control is off', () {
-      final open = options.copyWith(
-        accessControlProps: options.accessControlProps.copyWith(enable: false),
-      );
-
-      expect(
-        open
-            .copyWith(
-              accessControlProps: open.accessControlProps.copyWith(
-                mode: AccessControlMode.rejectSelected,
-                acceptList: const [],
-              ),
-            )
-            .effective,
-        open.effective,
-      );
-    });
-
-    test('a proxy-only run reads none of the tunnel options', () {
-      final proxyOnly = options.copyWith(enable: false);
-
-      expect(
-        proxyOnly.copyWith(ipv6: true, stack: 'gvisor', mtu: 1500).effective,
-        proxyOnly.effective,
-      );
-    });
-  });
-
   group('ChangeProxyParams', () {
     test('fromJson and toJson use snake-case', () {
       final json = {'group-name': 'Proxy', 'proxy-name': 'auto'};
@@ -167,6 +71,15 @@ void main() {
       final out = params.toJson();
       expect(out['group-name'], 'Proxy');
       expect(out['proxy-name'], 'auto');
+    });
+  });
+
+  group('UpdateGeoDataParams', () {
+    test('fromJson with snake-case keys', () {
+      final json = {'geo-type': 'mmdb', 'geo-name': 'Country'};
+      final params = UpdateGeoDataParams.fromJson(json);
+      expect(params.geoType, 'mmdb');
+      expect(params.geoName, 'Country');
     });
   });
 
@@ -184,6 +97,14 @@ void main() {
     test('null value', () {
       final delay = Delay.fromJson({'name': 'P1', 'url': 'test.com'});
       expect(delay.value, null);
+    });
+  });
+
+  group('Now', () {
+    test('fromJson and toJson', () {
+      final now = Now.fromJson({'name': 'test', 'value': '123'});
+      expect(now.name, 'test');
+      expect(now.value, '123');
     });
   });
 
@@ -241,11 +162,144 @@ void main() {
     });
   });
 
+  group('Overlay network status', () {
+    test('parses uninitialized state', () {
+      final status = OverlayNetworkStatus.fromJson({
+        'name': 'tailnet',
+        'kind': 'tailscale',
+        'state': 'uninitialized',
+        'raw-state': 'NoState',
+      });
+
+      expect(status.state, OverlayNetworkState.uninitialized);
+    });
+
+    test('parses Tailscale summary and node details', () {
+      final status = OverlayNetworkStatus.fromJson({
+        'name': 'tailnet',
+        'kind': 'tailscale',
+        'state': 'connected',
+        'raw-state': 'Running',
+        'auth-url': 'https://login.tailscale.com/a/test',
+        'network-name': 'example.com',
+        'details': {
+          'magic-dns-suffix': 'example.com',
+          'auth-key-configured': true,
+          'health': ['warning'],
+          'nodes': [
+            {
+              'id': 'node-1',
+              'public-key': 'nodekey:test',
+              'hostname': 'device',
+              'dns-name': 'device.example.com.',
+              'os': 'linux',
+              'ips': ['100.64.0.1'],
+              'tags': ['tag:server'],
+              'endpoints': ['192.0.2.1:41641'],
+              'current-endpoint': '192.0.2.1:41641',
+              'relay': 'sfo',
+              'rx-bytes': 12,
+              'tx-bytes': 34,
+              'online': false,
+              'active': false,
+              'self': false,
+              'exit-node': true,
+              'exit-node-option': true,
+              'expired': false,
+              'last-seen': '2026-08-18T00:00:00Z',
+            },
+          ],
+        },
+      });
+
+      expect(status.name, 'tailnet');
+      expect(status.kind, OverlayNetworkKind.tailscale);
+      expect(status.state, OverlayNetworkState.connected);
+      expect(status.networkName, 'example.com');
+      expect(status.tailscaleDetails?.magicDnsSuffix, 'example.com');
+      expect(status.tailscaleDetails?.authKeyConfigured, isTrue);
+      expect(status.tailscaleDetails?.health, ['warning']);
+      expect(status.tailscaleDetails?.nodes.single.hostName, 'device');
+      expect(
+        status.tailscaleDetails?.nodes.single.dnsName,
+        'device.example.com.',
+      );
+      expect(status.tailscaleDetails?.nodes.single.exitNode, isTrue);
+      expect(status.tailscaleDetails?.nodes.single.publicKey, 'nodekey:test');
+      expect(status.tailscaleDetails?.nodes.single.tags, ['tag:server']);
+      expect(status.tailscaleDetails?.nodes.single.endpoints, [
+        '192.0.2.1:41641',
+      ]);
+      expect(status.tailscaleDetails?.nodes.single.rxBytes, 12);
+      expect(
+        status.tailscaleDetails?.nodes.single.lastSeen,
+        DateTime.utc(2026, 8, 18),
+      );
+    });
+
+    test('parses ZeroTier summary and peer details', () {
+      final status = OverlayNetworkStatus.fromJson({
+        'name': 'zerotier',
+        'kind': 'zerotier',
+        'state': 'needs-login',
+        'raw-state': 'authentication-required',
+        'network-name': 'example',
+        'auth-url': 'https://example.com/login',
+        'details': {
+          'network-id': '8056c2e21c000001',
+          'node': 'abcdef1234',
+          'online': true,
+          'addresses': ['10.0.0.2/24'],
+          'routes': ['10.0.0.0/24'],
+          'dns': ['10.0.0.1:53'],
+          'mtu': 2800,
+          'peers': [
+            {
+              'address': '1234567890',
+              'role': 'leaf',
+              'version': '1.14.2',
+              'direct': true,
+              'endpoints': ['192.0.2.1:9993'],
+              'latency-ms': 12,
+            },
+          ],
+        },
+      });
+
+      expect(status.state, OverlayNetworkState.needsLogin);
+      expect(status.authUrl, 'https://example.com/login');
+      expect(status.zeroTierDetails?.networkId, '8056c2e21c000001');
+      expect(status.zeroTierDetails?.peers.single.direct, isTrue);
+      expect(status.zeroTierDetails?.peers.single.latencyMs, 12);
+    });
+
+    test('keeps details distinct from an empty summary', () {
+      final summary = OverlayNetworkStatus.fromJson({
+        'name': 'tailnet',
+        'kind': 'tailscale',
+        'state': 'stopped',
+      });
+
+      expect(summary.hasDetails, isFalse);
+      expect(summary.tailscaleDetails, isNull);
+    });
+  });
+
   group('CoreEvent', () {
     test('fromJson with type and data', () {
       final event = CoreEvent.fromJson({'type': 'log', 'data': 'test log'});
       expect(event.type, CoreEventType.log);
       expect(event.data, 'test log');
+    });
+  });
+
+  group('InvokeMessage', () {
+    test('fromJson', () {
+      final msg = InvokeMessage.fromJson({
+        'type': 'protect',
+        'data': {'method': 'test'},
+      });
+      expect(msg.type, InvokeMessageType.protect);
     });
   });
 }

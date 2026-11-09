@@ -77,6 +77,21 @@ const _$DnsModeEnumMap = {
   DnsMode.hosts: 'hosts',
 };
 
+_NodeTraffic _$NodeTrafficFromJson(Map<String, dynamic> json) => _NodeTraffic(
+  name: json['name'] as String,
+  provider: json['provider'] as String? ?? '',
+  up: (json['up'] as num?)?.toInt() ?? 0,
+  down: (json['down'] as num?)?.toInt() ?? 0,
+);
+
+Map<String, dynamic> _$NodeTrafficToJson(_NodeTraffic instance) =>
+    <String, dynamic>{
+      'name': instance.name,
+      'provider': instance.provider,
+      'up': instance.up,
+      'down': instance.down,
+    };
+
 _TrackerInfo _$TrackerInfoFromJson(Map<String, dynamic> json) => _TrackerInfo(
   id: json['id'] as String,
   upload: (json['upload'] as num?)?.toInt() ?? 0,
@@ -107,12 +122,15 @@ Map<String, dynamic> _$TrackerInfoToJson(_TrackerInfo instance) =>
 _Log _$LogFromJson(Map<String, dynamic> json) => _Log(
   logLevel:
       $enumDecodeNullable(_$LogLevelEnumMap, json['LogLevel']) ?? LogLevel.info,
+  source:
+      $enumDecodeNullable(_$LogSourceEnumMap, json['source']) ?? LogSource.app,
   payload: json['Payload'] as String? ?? '',
   dateTime: _logDateTime(json['dateTime']),
 );
 
 Map<String, dynamic> _$LogToJson(_Log instance) => <String, dynamic>{
   'LogLevel': _$LogLevelEnumMap[instance.logLevel]!,
+  'source': _$LogSourceEnumMap[instance.source]!,
   'Payload': instance.payload,
   'dateTime': instance.dateTime,
 };
@@ -124,6 +142,8 @@ const _$LogLevelEnumMap = {
   LogLevel.error: 'error',
   LogLevel.silent: 'silent',
 };
+
+const _$LogSourceEnumMap = {LogSource.app: 'app', LogSource.core: 'core'};
 
 _DnsQuery _$DnsQueryFromJson(Map<String, dynamic> json) => _DnsQuery(
   domain: json['domain'] as String,
@@ -162,6 +182,7 @@ const _$DnsQueryInitiatorEnumMap = {
   DnsQueryInitiator.rule: 'rule',
   DnsQueryInitiator.direct: 'direct',
   DnsQueryInitiator.proxy: 'proxy',
+  DnsQueryInitiator.manual: 'manual',
   DnsQueryInitiator.other: 'other',
 };
 
@@ -172,6 +193,7 @@ _DAVProps _$DAVPropsFromJson(Map<String, dynamic> json) => _DAVProps(
       ? ''
       : _decodeDavPassword(json['password'] as String?),
   fileName: json['fileName'] as String? ?? defaultDavFileName,
+  directory: json['directory'] as String? ?? defaultDavDirectory,
 );
 
 Map<String, dynamic> _$DAVPropsToJson(_DAVProps instance) => <String, dynamic>{
@@ -179,7 +201,19 @@ Map<String, dynamic> _$DAVPropsToJson(_DAVProps instance) => <String, dynamic>{
   'user': instance.user,
   'password': _encodeDavPassword(instance.password),
   'fileName': instance.fileName,
+  'directory': instance.directory,
 };
+
+_VersionInfo _$VersionInfoFromJson(Map<String, dynamic> json) => _VersionInfo(
+  clashName: json['clashName'] as String? ?? '',
+  version: json['version'] as String? ?? '',
+);
+
+Map<String, dynamic> _$VersionInfoToJson(_VersionInfo instance) =>
+    <String, dynamic>{
+      'clashName': instance.clashName,
+      'version': instance.version,
+    };
 
 _Traffic _$TrafficFromJson(Map<String, dynamic> json) =>
     _Traffic(up: json['up'] as num? ?? 0, down: json['down'] as num? ?? 0);
@@ -250,8 +284,6 @@ const _$HotActionEnumMap = {
   HotAction.ruleMode: 'ruleMode',
   HotAction.globalMode: 'globalMode',
   HotAction.directMode: 'directMode',
-  HotAction.delayTest: 'delayTest',
-  HotAction.updateProfiles: 'updateProfiles',
   HotAction.copyEnv: 'copyEnv',
   HotAction.exit: 'exit',
 };
@@ -280,9 +312,3 @@ Map<String, dynamic> _$ScriptToJson(_Script instance) => <String, dynamic>{
   'url': instance.url,
   'order': instance.order,
 };
-
-_IconSetIcon _$IconSetIconFromJson(Map<String, dynamic> json) =>
-    _IconSetIcon(name: json['name'] as String, url: json['url'] as String);
-
-Map<String, dynamic> _$IconSetIconToJson(_IconSetIcon instance) =>
-    <String, dynamic>{'name': instance.name, 'url': instance.url};

@@ -9,12 +9,12 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'desktop/model.dart';
 import 'interface.dart';
 import 'method.dart';
-import 'spill.dart';
 
 class CoreLib extends CoreHandlerInterface {
   static CoreLib? _instance;
 
   final Service? _service;
+  final bool _listenerManagedByService;
 
   Completer<bool> _connectedCompleter = Completer<bool>();
   Future<CoreLifecycleResult>? _closeOperation;
@@ -22,10 +22,13 @@ class CoreLib extends CoreHandlerInterface {
   int _methodCallId = 0;
   bool _closed = false;
 
-  CoreLib._internal() : _service = service;
+  CoreLib._internal()
+    : _service = service,
+      _listenerManagedByService = system.isIOS;
 
   @visibleForTesting
-  CoreLib.scoped(Service this._service);
+  CoreLib.scoped(Service this._service, {bool listenerManagedByService = false})
+    : _listenerManagedByService = listenerManagedByService;
 
   @visibleForTesting
   static void resetInstance() {
@@ -53,7 +56,6 @@ class CoreLib extends CoreHandlerInterface {
     if (initializationError.isNotEmpty) {
       throw StateError(initializationError);
     }
-    await globalState.container.read(vpnOptionsProvider.future);
     _connectedCompleter.complete(true);
     final syncError =
         await _service?.syncState(
@@ -94,7 +96,7 @@ class CoreLib extends CoreHandlerInterface {
     _connectedCompleter = Completer<bool>();
     final stopped = await _service?.shutdown() ?? true;
     if (!stopped) {
-      throw StateError('Android Core service shutdown failed');
+      throw StateError('Mobile Core service shutdown failed');
     }
     return CoreLifecycleResult(
       revision: revision,
@@ -112,19 +114,29 @@ class CoreLib extends CoreHandlerInterface {
     return _stop(allowClosed: true);
   }
 
-  // The service opens and closes the Core's listeners itself and reports a run
-  // that ends, so once it takes the command the Core's own answer is moot.
   @override
-  Future<bool> startListener() async {
-    await super.startListener();
-    return await _service?.start() ?? false;
+  Future<bool?> startListener() async {
+    if (_listenerManagedByService) {
+      return _service?.start(globalState.container.read(sharedStateProvider));
+    }
+    final listenerStarted = await super.startListener();
+    if (listenerStarted != true) {
+      return listenerStarted;
+    }
+    final serviceStarted = await _service?.start(
+      globalState.container.read(sharedStateProvider),
+    );
+    return serviceStarted == true ? true : null;
   }
 
   @override
-  Future<bool> stopListener() async {
-    final serviceStopped = await _service?.stop() ?? false;
-    await super.stopListener();
-    return serviceStopped;
+  Future<bool?> stopListener() async {
+    final serviceStopped = await _service?.stop();
+    if (_listenerManagedByService || serviceStopped != true) {
+      return serviceStopped;
+    }
+    final listenerStopped = await super.stopListener();
+    return listenerStopped == true ? true : null;
   }
 
   @override
@@ -133,14 +145,10 @@ class CoreLib extends CoreHandlerInterface {
     Object? arguments,
     Duration? timeout,
   }) {
-    final call = _invokeMethod<T>(method: method, arguments: arguments);
-    return call.withTimeout(
-      timeout: timeout,
-      onTimeout: () {
-        unawaited(call.then(discardSpilledFile, onError: (_) {}));
-        return null;
-      },
-    );
+    return _invokeMethod<T>(
+      method: method,
+      arguments: arguments,
+    ).withTimeout(timeout: timeout, onTimeout: () => null);
   }
 
   Future<T?> _invokeMethod<T>({
@@ -167,4 +175,4 @@ class CoreLib extends CoreHandlerInterface {
   }
 }
 
-CoreLib? get coreLib => system.isAndroid ? CoreLib() : null;
+CoreLib? get coreLib => system.isMobile ? CoreLib() : null;

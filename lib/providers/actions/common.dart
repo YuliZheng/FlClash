@@ -24,16 +24,11 @@ class CommonAction extends _$CommonAction {
 
   void updateSpeedStatistics() {
     ref
-        .read(appSettingProvider.notifier)
-        .update((state) => state.copyWith(showTrayTitle: !state.showTrayTitle));
-  }
-
-  void updateMonochromeTrayIcon() {
-    ref
-        .read(appSettingProvider.notifier)
+        .read(vpnSettingProvider.notifier)
         .update(
-          (state) =>
-              state.copyWith(monochromeTrayIcon: !state.monochromeTrayIcon),
+          (state) => state.copyWith(
+            networkSpeedNotification: !state.networkSpeedNotification,
+          ),
         );
   }
 
@@ -84,33 +79,30 @@ class CommonAction extends _$CommonAction {
 
   Future<bool> autoCheckUpdate() async {
     if (!ref.read(appSettingProvider).autoCheckUpdate) return false;
-    final Map<String, dynamic>? res;
     try {
-      res = await request.checkForUpdate();
-    } catch (error) {
+      final res = await request.checkForUpdate();
+      await checkUpdateResultHandle(data: res);
+      return res != null;
+    } catch (error, stackTrace) {
       commonPrint.log(
-        'checkForUpdate failed: ${compactError(error)}',
+        'autoCheckUpdate failed: $error\n$stackTrace',
         logLevel: LogLevel.warning,
       );
       return false;
     }
-    await checkUpdateResultHandle(data: res);
-    return res != null;
   }
 
   TextSpan _releaseSpan(BuildContext context, String tagName, String? body) {
+    final textTheme = context.textTheme;
     final version = parseReleaseChangelog(body);
     return TextSpan(
       text: '$tagName \n',
-      style: AppTextStyle.title2.of(context),
+      style: textTheme.headlineSmall,
       children: version == null
           ? [
-              TextSpan(text: '\n', style: AppTextStyle.subheadline.of(context)),
+              TextSpan(text: '\n', style: textTheme.bodyMedium),
               for (final submit in parseReleaseBody(body))
-                TextSpan(
-                  text: '- $submit \n',
-                  style: AppTextStyle.subheadline.of(context),
-                ),
+                TextSpan(text: '- $submit \n', style: textTheme.bodyMedium),
             ]
           : _changelogSpans(context, version),
     );
@@ -120,50 +112,61 @@ class CommonAction extends _$CommonAction {
     BuildContext context,
     ChangelogVersion version,
   ) {
+    final textTheme = context.textTheme;
     return [
       for (final group in version.visibleGroups) ...[
         TextSpan(
           text:
               '\n${changelogGroupTitle(currentAppLocalizations, group.type)}\n',
-          style: AppTextStyle.subheadline
-              .of(context, emphasized: true)
-              .copyWith(
-                color: group.type == ChangelogType.breaking
-                    ? context.colorScheme.error
-                    : context.colorScheme.primary,
-              ),
+          style: textTheme.labelLarge?.copyWith(
+            color: group.type == ChangelogType.breaking
+                ? context.colorScheme.error
+                : context.colorScheme.primary,
+          ),
         ),
         for (final entry in group.entries)
-          TextSpan(
-            text: '• ${entry.text}\n',
-            style: AppTextStyle.subheadline.of(context),
-          ),
+          TextSpan(text: '• ${entry.text}\n', style: textTheme.bodyMedium),
       ],
     ];
   }
 
   Future<void> checkUpdateResultHandle({
-    Map<String, dynamic>? data,
+    ReleaseManifest? data,
     bool isUser = false,
   }) async {
     if (data != null) {
-      final context = globalState.navigatorKey.currentContext!;
+      final message = _releaseSpan(
+        globalState.navigatorKey.currentContext!,
+        data.tag,
+        data.notes,
+      );
+      final plan = await _planAppUpdate(data);
+      final updatesInApp = plan?.target.package.updatesInApp ?? false;
       final res = await dialogs.showMessage(
         title: currentAppLocalizations.discoverNewVersion,
-        message: _releaseSpan(
-          context,
-          data['tag_name'] as String,
-          data['body'] as String?,
+        message: message,
+        leadingAction: TextButton(
+          onPressed: () => launchUrl(
+            Uri.https('github.com', '/$repository/releases/tag/${data.tag}'),
+            mode: LaunchMode.externalApplication,
+          ),
+          child: Text(currentAppLocalizations.openInGitHub),
         ),
-        confirmText: currentAppLocalizations.goDownload,
+        confirmText: updatesInApp
+            ? currentAppLocalizations.updateNow
+            : currentAppLocalizations.goDownload,
         cancelText: isUser ? null : currentAppLocalizations.noLongerRemind,
       );
       if (res == true) {
-        unawaited(
-          launchUrl(
-            Uri.parse('https://github.com/$repository/releases/latest'),
-          ),
-        );
+        if (plan == null || !updatesInApp) {
+          unawaited(launchUrl(browserDownloadUri(plan)));
+        } else {
+          await globalState.safeRun(
+            () => _applyAppUpdate(plan),
+            title: currentAppLocalizations.checkUpdate,
+            silence: false,
+          );
+        }
       } else if (!isUser && res == false) {
         ref
             .read(appSettingProvider.notifier)
@@ -171,11 +174,100 @@ class CommonAction extends _$CommonAction {
       }
     } else if (isUser) {
       unawaited(
-        dialogs.showAlert(
+        dialogs.showMessage(
           title: currentAppLocalizations.checkUpdate,
           message: TextSpan(text: currentAppLocalizations.checkUpdateError),
         ),
       );
+    }
+  }
+
+  @visibleForTesting
+  Future<UpdateTarget> Function() detectAppUpdateTarget = detectUpdateTarget;
+
+  Future<AppUpdatePlan?> _planAppUpdate(ReleaseManifest release) async {
+    try {
+      return planAppUpdate(release, await detectAppUpdateTarget());
+    } catch (error) {
+      commonPrint.log(
+        'update target detection failed: ${compactError(error)}',
+        logLevel: LogLevel.warning,
+      );
+      return null;
+    }
+  }
+
+  Future<void> _applyAppUpdate(AppUpdatePlan plan) async {
+    final file = await _downloadAppUpdate(plan);
+    if (file == null) {
+      return;
+    }
+    final package = plan.target.package;
+    switch (package) {
+      case UpdatePackage.windowsInstaller:
+        await appInstaller.startWindowsInstaller(file);
+        await _exitForUpdate();
+      case UpdatePackage.macosDmg:
+        await appInstaller.startMacosInstall(file);
+        await _exitForUpdate();
+      case UpdatePackage.linuxAppImage:
+        await appInstaller.replaceAppImage(file);
+        await appInstaller.startAppImageRelaunch();
+        await _exitForUpdate();
+      case UpdatePackage.androidApk:
+        await _installApk(file);
+      case UpdatePackage.linuxDeb ||
+          UpdatePackage.linuxRpm ||
+          UpdatePackage.linuxPacman:
+        if (await appInstaller.installWithPackageManager(plan, file)) {
+          await appInstaller.startRelaunch();
+          await _exitForUpdate();
+        }
+      case UpdatePackage.windowsPortable ||
+          UpdatePackage.linuxPortable ||
+          UpdatePackage.unsupported:
+        throw StateError('$package cannot be installed in place');
+    }
+  }
+
+  Future<File?> _downloadAppUpdate(AppUpdatePlan plan) async {
+    final outcome = await dialogs.showCommonDialog<ProgressOutcome<File>>(
+      dismissible: false,
+      child: UpdateProgressDialog<File>(
+        expectedTotal: plan.asset.size,
+        task: (onProgress, cancelToken) => appInstaller.download(
+          plan,
+          onReceiveProgress: onProgress,
+          cancelToken: cancelToken,
+        ),
+      ),
+    );
+    if (outcome == null) {
+      return null;
+    }
+    final error = outcome.error;
+    if (error == null) {
+      return outcome.value;
+    }
+    if (error is DioException && error.type == DioExceptionType.cancel) {
+      return null;
+    }
+    Error.throwWithStackTrace(error, outcome.stackTrace!);
+  }
+
+  Future<void> _exitForUpdate() {
+    return ref.read(systemActionProvider.notifier).handleExit();
+  }
+
+  Future<void> _installApk(File apk) async {
+    final status = await appInstaller.installApk(apk);
+    switch (status) {
+      case ApkInstallStatus.started:
+        return;
+      case ApkInstallStatus.permissionDenied:
+        throw MessageException(currentAppLocalizations.updateInstallPermission);
+      case ApkInstallStatus.failed:
+        throw MessageException(currentAppLocalizations.updateInstallFailed);
     }
   }
 }

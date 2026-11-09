@@ -8,26 +8,19 @@ class StoreAction extends _$StoreAction {
   void build() {}
 
   Future<void> shakingStore() async {
-    // The lists leave out rows they cannot read, whose files must survive, and
-    // the tables may not hold an optimistic write yet.
-    final profileIds = {
-      ...ref.read(profilesProvider).map((item) => item.id),
-      ...await database.profilesDao.ids().get(),
-    };
+    final profileIds = ref.read(profilesProvider).map((item) => item.id);
     final scripts = await ref.read(scriptsProvider.future);
-    final scriptIds = {
-      ...scripts.map((item) => item.id),
-      ...await database.scriptsDao.ids().get(),
-    };
-    final providerFileNames = await database.clashProvidersDao
-        .fileNames()
-        .get();
+    final scriptIds = scripts.map((item) => item.id);
     final pathsToDelete = await shakingProfileTask((
       profileIds: profileIds,
       scriptIds: scriptIds,
-      providerFileNames: providerFileNames,
     ));
-    await Future.wait(pathsToDelete.map(safeDeletePath));
+    final results = await Future.wait(
+      pathsToDelete.map(_core.deleteManagedPath),
+    );
+    for (final error in results.where((error) => error.isNotEmpty)) {
+      commonPrint.log(error, logLevel: LogLevel.warning);
+    }
   }
 
   void savePreferencesDebounce() {
@@ -36,35 +29,10 @@ class StoreAction extends _$StoreAction {
     });
   }
 
-  Future handleClear() async {
+  Future<void> handleClear([Set<ResetDataType> types = allResetDataTypes]) {
     debouncer.cancel(FunctionTag.savePreferences);
-    final profileIds = ref
-        .read(profilesProvider)
-        .map((item) => item.id)
-        .toSet();
-    final providersDir = Directory(await appPath.getProvidersRootPath());
-    if (await providersDir.exists()) {
-      await for (final entity in providersDir.list(followLinks: false)) {
-        if (entity is! Directory) continue;
-        final profileId = int.tryParse(basename(entity.path));
-        if (profileId != null && profileId > 0) {
-          profileIds.add(profileId);
-        }
-      }
-    }
-    final clearResults = await Future.wait(
-      profileIds.map((profileId) async {
-        try {
-          return await _core.clearEffect(profileId);
-        } catch (error) {
-          return 'clearEffect($profileId) failed: $error';
-        }
-      }),
-    );
-    for (final error in clearResults.where((error) => error.isNotEmpty)) {
-      commonPrint.log(error, logLevel: LogLevel.warning);
-    }
-    await clearAppData();
-    unawaited(ref.read(systemActionProvider.notifier).handleExit(false));
+    return ref
+        .read(systemActionProvider.notifier)
+        .handleReset(() => clearApplicationData(types));
   }
 }

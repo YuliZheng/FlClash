@@ -1,14 +1,18 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
+import 'package:fl_clash/common/request.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/interface.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/core.dart';
 import 'package:fl_clash/state.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -23,11 +27,12 @@ void main() {
 
   late MockCoreHandlerInterface core;
 
-  setUpAll(() {
+  setUpAll(() async {
+    await AppLocalizations.load(const Locale('en'));
     core = MockCoreHandlerInterface();
     globalState.packageInfo = PackageInfo(
       appName: 'FlClash',
-      packageName: 'com.follow.clash',
+      packageName: 'cc.chenx.flclash',
       version: runningVersion,
       buildNumber: '1',
     );
@@ -65,16 +70,24 @@ void main() {
   });
 
   group('CommonAction.updateSpeedStatistics', () {
-    test('toggles the tray title flag both ways', () {
+    test('toggles the shared network speed notification flag both ways', () {
       final container = buildContainer();
       final action = container.read(commonActionProvider.notifier);
-      final initial = container.read(appSettingProvider).showTrayTitle;
+      final initial = container
+          .read(vpnSettingProvider)
+          .networkSpeedNotification;
 
       action.updateSpeedStatistics();
-      expect(container.read(appSettingProvider).showTrayTitle, !initial);
+      expect(
+        container.read(vpnSettingProvider).networkSpeedNotification,
+        !initial,
+      );
 
       action.updateSpeedStatistics();
-      expect(container.read(appSettingProvider).showTrayTitle, initial);
+      expect(
+        container.read(vpnSettingProvider).networkSpeedNotification,
+        initial,
+      );
     });
   });
 
@@ -162,6 +175,27 @@ void main() {
       container
           .read(appSettingProvider.notifier)
           .update((state) => state.copyWith(autoCheckUpdate: false));
+
+      await expectLater(
+        container.read(commonActionProvider.notifier).autoCheckUpdate(),
+        completion(isFalse),
+      );
+    });
+
+    test('absorbs request failures during startup checks', () async {
+      final container = buildContainer();
+      final interceptor = InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              error: StateError('network unavailable'),
+            ),
+          );
+        },
+      );
+      request.clashDio.interceptors.add(interceptor);
+      addTearDown(() => request.clashDio.interceptors.remove(interceptor));
 
       await expectLater(
         container.read(commonActionProvider.notifier).autoCheckUpdate(),

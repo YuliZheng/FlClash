@@ -7,50 +7,61 @@ import 'package:fl_clash/enum/enum.dart';
 
 import 'dart:math';
 
-extension StringExtension on String {
-  bool get isUrl => webUri != null;
+class SearchMatcher {
+  final String query;
+  final bool useRegex;
+  final String _lowerQuery;
+  final RegExp? _regExp;
 
-  Uri? get webUri {
-    final uri = Uri.tryParse(this) ?? _parseWithBareAtInUserInfo(this);
-    return uri != null &&
-            (uri.scheme == 'http' ||
-                uri.scheme == 'https' ||
-                uri.scheme == 'ftp') &&
-            uri.host.isNotEmpty
-        ? uri
-        : null;
+  SearchMatcher(this.query, {this.useRegex = false})
+    : _lowerQuery = query.toLowerCase(),
+      _regExp = useRegex ? _tryBuildRegExp(query) : null;
+
+  static bool isValidRegex(String query) => _tryBuildRegExp(query) != null;
+
+  static RegExp? _tryBuildRegExp(String query) {
+    try {
+      return RegExp(query, caseSensitive: false);
+    } on FormatException {
+      return null;
+    }
   }
 
-  bool get isShareLink {
-    final index = indexOf('://');
-    return index > 0 &&
-        length > index + 3 &&
-        !contains('\n') &&
-        shareLinkSchemes.contains(substring(0, index).toLowerCase());
+  bool hasMatch(String value) {
+    if (query.isEmpty) {
+      return true;
+    }
+    if (!useRegex) {
+      return value.toLowerCase().contains(_lowerQuery);
+    }
+    return _regExp?.hasMatch(value) ?? false;
+  }
+
+  bool hasAnyMatch(Iterable<String> values) => values.any(hasMatch);
+}
+
+extension StringExtension on String {
+  bool get isUrl {
+    final uri = Uri.tryParse(this);
+    return uri != null &&
+        (uri.scheme == 'http' ||
+            uri.scheme == 'https' ||
+            uri.scheme == 'ftp') &&
+        uri.host.isNotEmpty;
+  }
+
+  List<String> get splitByMultipleSeparatorsList {
+    return split(RegExp(r'[, ;]+')).where((part) => part.isNotEmpty).toList();
   }
 
   dynamic get splitByMultipleSeparators {
-    final parts = split(
-      RegExp(r'[, ;]+'),
-    ).where((part) => part.isNotEmpty).toList();
+    final parts = splitByMultipleSeparatorsList;
 
     return parts.length > 1 ? parts : this;
   }
 
   int compareToLower(String other) {
     return toLowerCase().compareTo(other.toLowerCase());
-  }
-
-  String get countryFlagEmoji {
-    final code = toUpperCase();
-    if (!RegExp(r'^[A-Z]{2}$').hasMatch(code)) {
-      return this;
-    }
-    const regionalIndicatorA = 0x1F1E6;
-    return String.fromCharCodes([
-      code.codeUnitAt(0) - 0x41 + regionalIndicatorA,
-      code.codeUnitAt(1) - 0x41 + regionalIndicatorA,
-    ]);
   }
 
   String safeSubstring(int start, [int? end]) {
@@ -92,10 +103,7 @@ extension StringExtension on String {
   }
 
   bool get isSvg {
-    if (startsWith('data:')) {
-      return startsWith('data:image/svg+xml');
-    }
-    return (Uri.tryParse(this)?.path ?? this).toLowerCase().endsWith('.svg');
+    return endsWith('.svg');
   }
 
   bool get isRegex {
@@ -106,6 +114,10 @@ extension StringExtension on String {
       commonPrint.log(e.toString());
       return false;
     }
+  }
+
+  bool matchesQuery(String query, {bool useRegex = false}) {
+    return SearchMatcher(query, useRegex: useRegex).hasMatch(this);
   }
 
   String toMd5() {
@@ -147,20 +159,6 @@ extension StringExtension on String {
   }
 }
 
-Uri? _parseWithBareAtInUserInfo(String url) {
-  final schemeEnd = url.indexOf('://');
-  if (schemeEnd == -1) return null;
-  final authorityStart = schemeEnd + 3;
-  final pathStart = url.indexOf(RegExp('[/?#]'), authorityStart);
-  final authorityEnd = pathStart == -1 ? url.length : pathStart;
-  final at = url.lastIndexOf('@', authorityEnd - 1);
-  if (at <= authorityStart) return null;
-  final userInfo = url.substring(authorityStart, at).replaceAll('@', '%40');
-  return Uri.tryParse(
-    '${url.substring(0, authorityStart)}$userInfo${url.substring(at)}',
-  );
-}
-
 final _labelCounter = RegExp(r'\((\d{1,9})\)$');
 
 String uniqueLabelFor(
@@ -181,6 +179,12 @@ String uniqueLabelFor(
     if (!taken(candidate)) {
       return candidate;
     }
+  }
+}
+
+extension SearchableStringsExtension on Iterable<String> {
+  bool matchesQuery(String query, {bool useRegex = false}) {
+    return SearchMatcher(query, useRegex: useRegex).hasAnyMatch(this);
   }
 }
 
@@ -228,4 +232,16 @@ String generateRandomSecret(int length) {
       (_) => chars.codeUnitAt(random.nextInt(chars.length)),
     ),
   );
+}
+
+String getOverwriteLabel(String label) {
+  final reg = RegExp(r'\((\d+)\)$');
+  final matches = reg.allMatches(label);
+  if (matches.isNotEmpty) {
+    final match = matches.last;
+    final number = int.parse(match[1] ?? '0') + 1;
+    return '${label.substring(0, match.start)}($number)';
+  } else {
+    return '$label(1)';
+  }
 }

@@ -62,6 +62,30 @@ class DavSetting extends _$DavSetting with AutoDisposeNotifierMixin {
 }
 
 @riverpod
+class OverrideDns extends _$OverrideDns with AutoDisposeNotifierMixin {
+  @override
+  bool build() {
+    return false;
+  }
+}
+
+@riverpod
+class OverrideNtp extends _$OverrideNtp with AutoDisposeNotifierMixin {
+  @override
+  bool build() {
+    return false;
+  }
+}
+
+@riverpod
+class OverrideSniffer extends _$OverrideSniffer with AutoDisposeNotifierMixin {
+  @override
+  bool build() {
+    return false;
+  }
+}
+
+@riverpod
 class HotKeyActions extends _$HotKeyActions with AutoDisposeNotifierMixin {
   @override
   List<HotKeyAction> build() {
@@ -95,6 +119,12 @@ class ExcludeSSIDs extends _$ExcludeSSIDs with AutoDisposeNotifierMixin {
   }
 }
 
+@riverpod
+class AlwaysOn extends _$AlwaysOn with AutoDisposeNotifierMixin {
+  @override
+  bool build() => false;
+}
+
 @Riverpod(name: 'configProvider')
 Config _config(Ref ref) {
   final appSettingProps = ref.watch(appSettingProvider);
@@ -104,10 +134,14 @@ Config _config(Ref ref) {
   final themeProps = ref.watch(themeSettingProvider);
   final currentProfileId = ref.watch(currentProfileIdProvider);
   final davProps = ref.watch(davSettingProvider);
+  final overrideDns = ref.watch(overrideDnsProvider);
+  final overrideNtp = ref.watch(overrideNtpProvider);
+  final overrideSniffer = ref.watch(overrideSnifferProvider);
   final hotKeyActions = ref.watch(hotKeyActionsProvider);
   final proxiesStyleProps = ref.watch(proxiesStyleSettingProvider);
   final patchClashConfig = ref.watch(patchClashConfigProvider);
   final excludeSSIDs = ref.watch(excludeSSIDsProvider);
+  final alwaysOn = ref.watch(alwaysOnProvider);
   return Config(
     appSettingProps: appSettingProps,
     windowProps: windowProps,
@@ -116,27 +150,15 @@ Config _config(Ref ref) {
     themeProps: themeProps,
     currentProfileId: currentProfileId,
     davProps: davProps,
+    overrideDns: overrideDns,
+    overrideNtp: overrideNtp,
+    overrideSniffer: overrideSniffer,
     hotKeyActions: hotKeyActions,
     proxiesStyleProps: proxiesStyleProps,
     patchClashConfig: patchClashConfig,
     excludeSSIDs: excludeSSIDs,
+    alwaysOn: alwaysOn,
   );
-}
-
-void writeConfig(Ref ref, Config config) {
-  ref.read(appSettingProvider.notifier).value = config.appSettingProps;
-  ref.read(windowSettingProvider.notifier).value = config.windowProps;
-  ref.read(vpnSettingProvider.notifier).value = config.vpnProps;
-  ref.read(networkSettingProvider.notifier).value = config.networkProps;
-  ref.read(themeSettingProvider.notifier).value = config.themeProps;
-  ref.read(currentProfileIdProvider.notifier).value = config.currentProfileId;
-  ref.read(davSettingProvider.notifier).value = config.davProps;
-  ref.read(hotKeyActionsProvider.notifier).value = config.hotKeyActions;
-  ref.read(proxiesStyleSettingProvider.notifier).value =
-      config.proxiesStyleProps;
-  ref.read(patchClashConfigProvider.notifier).value = config.patchClashConfig
-      .ensureControllerSecret();
-  ref.read(excludeSSIDsProvider.notifier).value = config.excludeSSIDs;
 }
 
 List<Override> buildConfigOverrides(Config config) {
@@ -150,6 +172,9 @@ List<Override> buildConfigOverrides(Config config) {
       (_, _) => config.currentProfileId,
     ),
     davSettingProvider.overrideWithBuild((_, _) => config.davProps),
+    overrideDnsProvider.overrideWithBuild((_, _) => config.overrideDns),
+    overrideNtpProvider.overrideWithBuild((_, _) => config.overrideNtp),
+    overrideSnifferProvider.overrideWithBuild((_, _) => config.overrideSniffer),
     hotKeyActionsProvider.overrideWithBuild((_, _) => config.hotKeyActions),
     proxiesStyleSettingProvider.overrideWithBuild(
       (_, _) => config.proxiesStyleProps,
@@ -158,5 +183,6 @@ List<Override> buildConfigOverrides(Config config) {
       (_, _) => config.patchClashConfig,
     ),
     excludeSSIDsProvider.overrideWithBuild((_, _) => config.excludeSSIDs),
+    alwaysOnProvider.overrideWithBuild((_, _) => config.alwaysOn),
   ];
 }

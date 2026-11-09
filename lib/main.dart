@@ -3,27 +3,21 @@ import 'dart:io';
 
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/pages/error.dart';
+import 'package:fl_clash/providers/providers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rust_api/rust_api.dart';
-import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 import 'application.dart';
 import 'bootstrap.dart';
-import 'common/app_data.dart';
 import 'common/common.dart';
-import 'common/preferences_store.dart';
 import 'common/window.dart';
 
 void main(List<String> args) {
   runZonedGuarded(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
-      if (Platform.isWindows || Platform.isLinux) {
-        SharedPreferencesStorePlatform.instance = AtomicFilePreferencesStore(
-          appPath.sharedPreferencesPath,
-        );
-      }
       if (Platform.isLinux) {
         linkManager.seedInitialLink(args);
       }
@@ -39,9 +33,24 @@ void main(List<String> args) {
         await RustLib.init();
         final version = await system.init();
         final container = await bootstrap.init(version);
+        if (system.isDesktop && !kDebugMode) {
+          final signals = [
+            ProcessSignal.sigint,
+            if (!system.isWindows) ProcessSignal.sigterm,
+          ];
+          for (final signal in signals) {
+            signal.watch().listen((signal) {
+              commonPrint.log('Received process signal: ${signal.name}');
+              unawaited(
+                container.read(systemActionProvider.notifier).handleExit(),
+              );
+            });
+          }
+        }
         await FlClashHttpOverrides.trustCoreRoots();
         HttpOverrides.global = FlClashHttpOverrides(container);
         request.attach(container.read);
+        PaintingBinding.instance.imageCache.maximumSizeBytes = 64 * 1024 * 1024;
         runApp(
           UncontrolledProviderScope(
             container: container,
@@ -49,15 +58,16 @@ void main(List<String> args) {
           ),
         );
       } catch (e, s) {
+        commonPrint.log(
+          'Failed to initialize: $e, $s',
+          logLevel: LogLevel.error,
+        );
         runApp(
-          InitErrorApp(
-            error: e,
-            stack: s,
-            onClearData: clearAppData,
-            onExit: _exitAfterInitFailure,
+          MaterialApp(
+            home: InitErrorScreen(error: e, stack: s),
           ),
         );
-        unawaited(window?.showInitFailure(onExit: _exitAfterInitFailure));
+        unawaited(window?.showInitFailure());
       }
     },
     (error, stack) {
@@ -66,9 +76,4 @@ void main(List<String> args) {
       );
     },
   );
-}
-
-Future<void> _exitAfterInitFailure() async {
-  await system.exit();
-  window?.forceExit();
 }

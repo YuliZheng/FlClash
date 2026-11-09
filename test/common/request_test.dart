@@ -1,45 +1,18 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:dio/dio.dart';
-import 'package:fl_clash/common/constant.dart';
+import 'package:fl_clash/common/exception.dart';
 import 'package:fl_clash/common/request.dart';
+import 'package:fl_clash/l10n/l10n.dart';
+import 'package:fl_clash/state.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-class _StalledHttpClient extends Fake implements HttpClient {
-  @override
-  Duration? connectionTimeout;
-
-  @override
-  String Function(Uri url)? findProxy;
-
-  @override
-  Future<HttpClientRequest> openUrl(String method, Uri url) =>
-      Completer<HttpClientRequest>().future;
-}
-
-class _HostAdapter implements HttpClientAdapter {
-  _HostAdapter(this.byHost);
-
-  final Map<String, ResponseBody Function()> byHost;
-
-  @override
-  Future<ResponseBody> fetch(
-    RequestOptions options,
-    Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
-  ) async {
-    return byHost[options.uri.host]!();
-  }
-
-  @override
-  void close({bool force = false}) {}
-}
+import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUpAll(() async {
+    await AppLocalizations.load(const Locale('en'));
+  });
 
   test('getTextResponseForUrl propagates the typed DioException', () async {
     // flutter_test's mocked HttpClient answers every request with HTTP 400,
@@ -69,128 +42,140 @@ void main() {
     );
   });
 
-  group('latestRelease', () {
-    Request requestAnswering(Map<String, ResponseBody Function()> byHost) {
-      return Request()..dio.httpClientAdapter = _HostAdapter(byHost);
-    }
-
-    test('reads the release from the API', () async {
-      final request = requestAnswering({
-        'api.github.com': () => ResponseBody.fromString(
-          '{"tag_name":"v1.2.3","body":"notes"}',
-          200,
-          headers: {
-            Headers.contentTypeHeader: [Headers.jsonContentType],
-          },
-        ),
-      });
-
-      expect(await request.latestRelease(), {
-        'tag_name': 'v1.2.3',
-        'body': 'notes',
-      });
-    });
-
-    test(
-      'falls back to the release page when the API is rate limited',
-      () async {
-        final request = requestAnswering({
-          'api.github.com': () => ResponseBody.fromString('{}', 403),
-          'github.com': () => ResponseBody.fromString(
-            '',
-            302,
-            headers: {
-              HttpHeaders.locationHeader: [
-                'https://github.com/owner/repo/releases/tag/v1.2.4',
-              ],
-            },
+  test('checkForUpdate includes HTTP status and response body', () async {
+    final interceptor = InterceptorsWrapper(
+      onRequest: (options, handler) {
+        handler.reject(
+          DioException(
+            requestOptions: options,
+            response: Response<String>(
+              requestOptions: options,
+              statusCode: 403,
+              data: 'rate limited',
+            ),
+            type: DioExceptionType.badResponse,
           ),
-        });
-
-        expect(await request.latestRelease(), {'tag_name': 'v1.2.4'});
+        );
       },
     );
-
-    test('fails instead of answering when neither endpoint does', () async {
-      final request = requestAnswering({
-        'api.github.com': () => ResponseBody.fromString('{}', 403),
-        'github.com': () => ResponseBody.fromString('', 503),
-      });
-
-      await expectLater(request.latestRelease(), throwsA(isA<DioException>()));
-    });
-  });
-
-  group('downloadTarget', () {
-    test('sends a URL without credentials unchanged', () {
-      final target = downloadTarget('https://example.com/a.yaml?x=1');
-
-      expect(target.uri.toString(), 'https://example.com/a.yaml?x=1');
-      expect(target.headers, isEmpty);
+    request.clashDio.interceptors.add(interceptor);
+    addTearDown(() {
+      request.clashDio.interceptors.remove(interceptor);
     });
 
-    test('moves decoded credentials into the Authorization header', () {
-      for (final url in [
-        'https://me@mail.com:p:w@dav.example.com/dav/a.yaml',
-        'https://me%40mail.com:p%3Aw@dav.example.com/dav/a.yaml',
-      ]) {
-        final target = downloadTarget(url);
-
-        expect(target.uri.toString(), 'https://dav.example.com/dav/a.yaml');
-        expect(
-          target.headers[HttpHeaders.authorizationHeader],
-          'Basic ${base64.encode(utf8.encode('me@mail.com:p:w'))}',
-        );
-      }
-    });
-  });
-
-  group('decompressUnlabeled', () {
-    final yaml = utf8.encode('proxies: []\n');
-
-    test('inflates a gzip or zlib body that arrived unlabeled', () {
-      for (final codec in [gzip, zlib]) {
-        final body = Uint8List.fromList(codec.encode(yaml));
-
-        expect(decompressUnlabeled(body), yaml);
-      }
-    });
-
-    test('leaves a plain body untouched', () {
-      final body = Uint8List.fromList(yaml);
-
-      expect(decompressUnlabeled(body), same(body));
-    });
-
-    test('keeps a body that only starts like gzip', () {
-      final body = Uint8List.fromList([0x1f, 0x8b, 1, 2, 3]);
-
-      expect(decompressUnlabeled(body), same(body));
-    });
-  });
-
-  testWidgets('a stalled download fails at the shared download deadline', (
-    tester,
-  ) async {
-    late final Future<Response<String>> pending;
-    HttpOverrides.runZoned(() {
-      pending = Request().getTextResponseForUrl('http://127.0.0.1/stalled');
-    }, createHttpClient: (_) => _StalledHttpClient());
-    var settled = false;
-    final outcome = expectLater(
-      pending.whenComplete(() => settled = true),
+    await expectLater(
+      request.checkForUpdate(),
       throwsA(
-        isA<DioException>().having(
-          (e) => e.type,
-          'type',
-          DioExceptionType.receiveTimeout,
-        ),
+        isA<MessageException>()
+            .having((e) => e.message, 'message', contains('[403]'))
+            .having((e) => e.message, 'message', contains('rate limited')),
       ),
     );
+  });
 
-    await tester.pump(downloadTimeoutDuration - const Duration(seconds: 1));
-    expect(settled, isFalse);
-    await tester.pump(const Duration(seconds: 1));
-    await outcome;
+  group('checkForUpdate reads the release manifest', () {
+    final urls = <String>[];
+
+    void serve(String tag) {
+      final interceptor = InterceptorsWrapper(
+        onRequest: (options, handler) {
+          urls.add(options.uri.toString());
+          handler.resolve(
+            Response<String>(
+              requestOptions: options,
+              statusCode: 200,
+              data: '{"tag":"$tag","notes":"","assets":[]}',
+            ),
+          );
+        },
+      );
+      request.clashDio.interceptors.add(interceptor);
+      addTearDown(() => request.clashDio.interceptors.remove(interceptor));
+    }
+
+    setUp(urls.clear);
+
+    setUpAll(() {
+      globalState.packageInfo = PackageInfo(
+        appName: 'FlClash',
+        packageName: 'cc.chenx.flclash',
+        version: '0.9.3',
+        buildNumber: '1',
+      );
+    });
+
+    test('from a release download, not the API', () async {
+      serve('v0.9.4');
+
+      final release = await request.checkForUpdate();
+
+      expect(release?.tag, 'v0.9.4');
+      expect(urls, [
+        'https://github.com/chenx-dust/FlClash-Patched/releases/latest/download/version.json',
+      ]);
+    });
+
+    test('and ignores a release that is not newer', () async {
+      serve('v0.9.3');
+
+      expect(await request.checkForUpdate(), isNull);
+    });
+
+    test('falls back to the API for a release without a manifest', () async {
+      final interceptor = InterceptorsWrapper(
+        onRequest: (options, handler) {
+          urls.add(options.uri.toString());
+          if (options.uri.host != 'api.github.com') {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                response: Response<String>(
+                  requestOptions: options,
+                  statusCode: 404,
+                ),
+                type: DioExceptionType.badResponse,
+              ),
+            );
+            return;
+          }
+          handler.resolve(
+            Response<Object?>(
+              requestOptions: options,
+              statusCode: 200,
+              data: {'tag_name': 'v0.9.4', 'body': '- notes', 'assets': []},
+            ),
+          );
+        },
+      );
+      request.clashDio.interceptors.add(interceptor);
+      addTearDown(() => request.clashDio.interceptors.remove(interceptor));
+
+      final release = await request.checkForUpdate();
+
+      expect(release?.tag, 'v0.9.4');
+      expect(release?.notes, '- notes');
+      expect(urls.last, startsWith('https://api.github.com/'));
+    });
+
+    test('reports an unreadable manifest as a request failure', () async {
+      final interceptor = InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.resolve(
+            Response<Object?>(
+              requestOptions: options,
+              statusCode: 200,
+              data: options.uri.host == 'api.github.com' ? 'nope' : '{}',
+            ),
+          );
+        },
+      );
+      request.clashDio.interceptors.add(interceptor);
+      addTearDown(() => request.clashDio.interceptors.remove(interceptor));
+
+      await expectLater(
+        request.checkForUpdate(),
+        throwsA(isA<MessageException>()),
+      );
+    });
   });
 }

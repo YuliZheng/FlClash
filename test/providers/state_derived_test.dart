@@ -1,5 +1,7 @@
+import 'dart:convert';
+
 import 'package:fl_clash/common/app_ports.dart';
-import 'package:fl_clash/common/cidr.dart';
+import 'package:fl_clash/common/color.dart';
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/common/system.dart';
 import 'package:fl_clash/enum/enum.dart';
@@ -9,7 +11,6 @@ import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/providers/state.dart';
-import 'package:fl_clash/ui/color.dart';
 import 'package:fl_clash/views/navigation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,6 +33,12 @@ void main() {
     container.dispose();
   });
 
+  test('iOS proxy state ignores service suspension', () {
+    expect(resolveProxySuspended(isIOS: true, suspend: true), isFalse);
+    expect(resolveProxySuspended(isIOS: false, suspend: true), isTrue);
+    expect(resolveProxySuspended(isIOS: false, suspend: false), isFalse);
+  });
+
   test('group derivation sanitizes runtime state and respects clash mode', () {
     final groups = [
       const Group(
@@ -42,11 +49,7 @@ void main() {
         all: [Proxy(name: 'Selected', type: 'Direct', now: 'runtime')],
       ),
       const Group(name: 'Hidden', type: GroupType.Selector, hidden: true),
-      Group(
-        name: GroupName.GLOBAL.name,
-        type: GroupType.Selector,
-        hidden: true,
-      ),
+      Group(name: GroupName.GLOBAL.name, type: GroupType.Selector),
     ];
     container.read(groupsProvider.notifier).update((_) => groups);
     container
@@ -59,6 +62,17 @@ void main() {
     expect(ruleGroups.single.all.single.now, isEmpty);
 
     container
+        .read(proxiesStyleSettingProvider.notifier)
+        .update((state) => state.copyWith(showHiddenGroups: true));
+    expect(
+      container
+          .read(currentGroupsStateProvider)
+          .value
+          .map((group) => group.name),
+      ['Visible', 'Hidden'],
+    );
+
+    container
         .read(patchClashConfigProvider.notifier)
         .update((state) => state.copyWith(mode: Mode.global));
     expect(container.read(currentGroupsStateProvider).value, hasLength(3));
@@ -69,299 +83,115 @@ void main() {
     expect(container.read(currentGroupsStateProvider).value, isEmpty);
   });
 
-  test('a GLOBAL group of the profile\'s own shows in rule mode', () {
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => [
-            Group(
-              name: GroupName.GLOBAL.name,
-              type: GroupType.Selector,
-              hidden: false,
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-
-    expect(
-      container
-          .read(currentGroupsStateProvider)
-          .value
-          .map((group) => group.name),
-      [GroupName.GLOBAL.name],
-    );
-  });
-
-  test('group derivation ignores a change of selection only', () {
-    Group group(String now, String nestedNow) => Group(
-      name: 'Visible',
-      type: GroupType.Selector,
-      now: now,
-      hidden: false,
-      all: [
-        const Proxy(name: 'Node', type: 'Direct'),
-        Proxy(name: 'Auto', type: 'URLTest', now: nestedNow),
-      ],
-    );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container.read(groupsProvider.notifier).update((_) => [group('Node', 'a')]);
-    var notified = 0;
-    container.listen(currentGroupsStateProvider, (_, _) => notified++);
-
-    container.read(groupsProvider.notifier).update((_) => [group('Auto', 'b')]);
-    container.read(currentGroupsStateProvider);
-
-    expect(notified, 0);
-  });
-
-  test('hiding timed-out nodes leaves the rest of the group alone', () {
-    const testUrl = 'https://default.test';
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => [
-            const Group(
-              name: 'Visible',
-              type: GroupType.Selector,
-              hidden: false,
-              all: [
-                Proxy(name: 'fast', type: 'ss'),
-                Proxy(name: 'slow', type: 'ss'),
-              ],
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(testUrl: testUrl));
-    container
-        .read(delayDataSourceProvider.notifier)
-        .setDelay(const Delay(url: testUrl, name: 'slow', value: -1));
-
-    expect(
-      container.read(visibleGroupsStateProvider).value.single.all,
-      hasLength(2),
-    );
-
-    container
-        .read(proxiesStyleSettingProvider.notifier)
-        .update((state) => state.copyWith(hideTimeoutProxies: true));
-    expect(
-      container
-          .read(visibleGroupsStateProvider)
-          .value
-          .single
-          .all
-          .map((proxy) => proxy.name),
-      ['fast'],
-    );
-  });
-
-  test('hidden timed-out nodes follow test batches and cleared delays', () {
-    const testUrl = 'https://default.test';
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(testUrl: testUrl));
-    container
-        .read(proxiesStyleSettingProvider.notifier)
-        .update((state) => state.copyWith(hideTimeoutProxies: true));
-    void setGroup(String now) {
-      container
-          .read(groupsProvider.notifier)
-          .update(
-            (_) => [
-              Group(
-                name: 'Visible',
-                type: GroupType.Selector,
-                now: now,
-                hidden: false,
-                all: const [
-                  Proxy(name: 'a', type: 'ss'),
-                  Proxy(name: 'b', type: 'ss'),
-                  Proxy(name: 'c', type: 'ss'),
-                ],
-              ),
-            ],
-          );
-    }
-
-    Iterable<String> visibleNames() => container
-        .read(visibleGroupsStateProvider)
-        .value
-        .single
-        .all
-        .map((proxy) => proxy.name);
-
-    setGroup('a');
-    expect(visibleNames(), ['a', 'b', 'c']);
-
-    container
-        .read(delayDataSourceProvider.notifier)
-        .setDelay(const Delay(url: testUrl, name: 'b', value: -1));
-    setGroup('c');
-    expect(visibleNames(), ['a', 'b', 'c']);
-
-    container.read(sortNumProvider.notifier).add();
-    expect(visibleNames(), ['a', 'c']);
-
-    container
-        .read(delayDataSourceProvider.notifier)
-        .setDelay(const Delay(url: testUrl, name: 'c', value: -1));
-    setGroup('a');
-    expect(visibleNames(), ['a', 'c']);
-
-    container.read(delayDataSourceProvider.notifier).value = {};
-    expect(visibleNames(), ['a', 'b', 'c']);
-  });
-
-  test('hiding timed-out nodes keeps the core pick, never empties a group', () {
-    const testUrl = 'https://default.test';
-    const nodes = [Proxy(name: 'a', type: 'ss'), Proxy(name: 'b', type: 'ss')];
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => [
-            const Group(
-              name: 'Auto',
-              type: GroupType.URLTest,
-              now: 'b',
-              hidden: false,
-              all: nodes,
-            ),
-            const Group(
-              name: 'Balance',
-              type: GroupType.LoadBalance,
-              hidden: false,
-              all: nodes,
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(testUrl: testUrl));
-    for (final node in nodes) {
-      container
-          .read(delayDataSourceProvider.notifier)
-          .setDelay(Delay(url: testUrl, name: node.name, value: -1));
-    }
-    container
-        .read(proxiesStyleSettingProvider.notifier)
-        .update((state) => state.copyWith(hideTimeoutProxies: true));
-
-    final groups = container.read(visibleGroupsStateProvider).value;
-    expect(groups.first.all.map((proxy) => proxy.name), ['b']);
-    expect(groups.last.all.map((proxy) => proxy.name), ['a', 'b']);
-  });
-
-  test('hiding timed-out nodes keeps a group listed in another', () {
-    const testUrl = 'https://default.test';
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => const [
-            Group(
-              name: 'Proxy',
-              type: GroupType.Selector,
-              now: 'a',
-              hidden: false,
-              all: [
-                Proxy(name: 'a', type: 'ss'),
-                Proxy(name: 'HK', type: 'Selector'),
-              ],
-            ),
-            Group(
-              name: 'HK',
-              type: GroupType.Selector,
-              now: 'b',
-              hidden: true,
-              all: [Proxy(name: 'b', type: 'ss')],
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(testUrl: testUrl));
-    container
-        .read(delayDataSourceProvider.notifier)
-        .setDelay(const Delay(url: testUrl, name: 'b', value: -1));
-    container
-        .read(proxiesStyleSettingProvider.notifier)
-        .update((state) => state.copyWith(hideTimeoutProxies: true));
-
-    expect(
-      container
-          .read(visibleGroupsStateProvider)
-          .value
-          .single
-          .all
-          .map((proxy) => proxy.name),
-      ['a', 'HK'],
-    );
-  });
-
-  test('a search whose matches all timed out keeps them and their group', () {
-    const testUrl = 'https://default.test';
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => const [
-            Group(
-              name: 'Proxy',
-              type: GroupType.Selector,
-              now: 'JP',
-              hidden: false,
-              all: [
-                Proxy(name: 'HK 01', type: 'ss'),
-                Proxy(name: 'HK 02', type: 'ss'),
-                Proxy(name: 'JP', type: 'ss'),
-              ],
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(testUrl: testUrl));
-    container
-        .read(proxiesStyleSettingProvider.notifier)
-        .update((state) => state.copyWith(hideTimeoutProxies: true));
-    final delays = container.read(delayDataSourceProvider.notifier);
-    delays.setDelay(const Delay(url: testUrl, name: 'HK 01', value: -1));
-    delays.setDelay(const Delay(url: testUrl, name: 'HK 02', value: -1));
-
-    List<String> names(String query) => [
-      for (final proxy
-          in container.read(filterGroupsStateProvider(query)).value.single.all)
-        proxy.name,
+  test('tray state restores and follows runtime group selections', () async {
+    const proxies = [
+      Proxy(name: 'A', type: 'Direct'),
+      Proxy(name: 'B', type: 'Direct'),
     ];
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith(mode: Mode.rule));
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'Proxy',
+              type: GroupType.Selector,
+              now: 'A',
+              all: proxies,
+            ),
+          ],
+        );
 
-    expect(names(''), ['JP']);
-    expect(names('hk'), ['HK 01', 'HK 02']);
+    expect(container.read(trayStateProvider).groups.single.now, 'A');
 
-    delays.setDelay(const Delay(url: testUrl, name: 'HK 02', value: 80));
-    container.read(sortNumProvider.notifier).add();
-    expect(names('hk'), ['HK 02']);
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'Proxy',
+              type: GroupType.Selector,
+              now: 'B',
+              all: proxies,
+            ),
+          ],
+        );
+    await container.pump();
+
+    expect(container.read(trayStateProvider).groups.single.now, 'B');
   });
 
   test('navigation providers select items for width and current page', () {
+    NavigationItem networkingItem() => container
+        .read(navigationItemsStateProvider)
+        .value
+        .singleWhere((item) => item.label == PageLabel.networking);
+    bool showsNetworkingTool() => container
+        .read(moreToolsSelectorStateProvider)
+        .navigationItems
+        .any((item) => item.label == PageLabel.networking);
+
+    expect(networkingItem().modes, isEmpty);
+    expect(showsNetworkingTool(), isFalse);
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'Tailscale group',
+              type: GroupType.Selector,
+              all: [Proxy(name: 'tailnet', type: 'Tailscale')],
+            ),
+          ],
+        );
+    expect(networkingItem().modes, containsAll([
+      NavigationItemMode.mobile,
+      NavigationItemMode.desktop,
+      NavigationItemMode.more,
+    ]));
+    expect(showsNetworkingTool(), isTrue);
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'ZeroTier group',
+              type: GroupType.Selector,
+              all: [Proxy(name: 'zerotier', type: 'ZeroTier')],
+            ),
+          ],
+        );
+    expect(networkingItem().modes, contains(NavigationItemMode.mobile));
+    expect(showsNetworkingTool(), isTrue);
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'EasyTier group',
+              type: GroupType.Selector,
+              all: [Proxy(name: 'mesh', type: 'EasyTier')],
+            ),
+          ],
+        );
+    expect(networkingItem().modes, contains(NavigationItemMode.mobile));
+    expect(showsNetworkingTool(), isTrue);
+    container
+        .read(groupsProvider.notifier)
+        .update(
+          (_) => const [
+            Group(
+              name: 'Direct group',
+              type: GroupType.Selector,
+              all: [Proxy(name: 'DIRECT', type: 'Direct')],
+            ),
+          ],
+        );
+    expect(networkingItem().modes, isEmpty);
+    expect(showsNetworkingTool(), isFalse);
+
     container
         .read(viewSizeProvider.notifier)
         .update((_) => Size(maxMobileWidth.toDouble(), 800));
@@ -410,6 +240,11 @@ void main() {
 
     final dashboard = container.read(dashboardStateProvider);
     expect(dashboard.dashboardWidgets, isNotEmpty);
+
+    final actions = container.read(proxiesActionsStateProvider);
+    expect(actions.pageLabel, PageLabel.dashboard);
+    expect(actions.hasProviders, isFalse);
+    expect(actions.type, ProxiesType.tab);
   });
 
   test(
@@ -455,6 +290,29 @@ void main() {
       expect(filtered.single.all.single.name, 'Alpha');
 
       container
+          .read(searchUseRegexProvider(QueryTag.proxies).notifier)
+          .update((_) => true);
+      final regexFiltered = container
+          .read(filterGroupsStateProvider(r'^(Alpha|Gamma)$'))
+          .value;
+      expect(regexFiltered.map((group) => group.name), ['Group A', 'Group B']);
+      expect(regexFiltered.first.all.single.name, 'Alpha');
+
+      container
+          .read(appSettingProvider.notifier)
+          .update((state) => state.copyWith(testUrl: 'https://default.test'));
+      container
+          .read(delayDataSourceProvider.notifier)
+          .setDelay(
+            const Delay(name: 'Beta', url: 'https://default.test', value: -1),
+          );
+      container
+          .read(proxiesStyleSettingProvider.notifier)
+          .update((state) => state.copyWith(hideUnavailable: true));
+      final available = container.read(filterGroupsStateProvider('')).value;
+      expect(available.first.all.map((proxy) => proxy.name), ['Alpha']);
+
+      container
           .read(queryProvider(QueryTag.proxies).notifier)
           .update((_) => 'ga');
       final list = container.read(proxiesListStateProvider);
@@ -467,42 +325,22 @@ void main() {
       final controller = container.read(proxiesTabControllerStateProvider);
       expect(controller.groupNames, ['Group B']);
       expect(controller.currentGroupName, 'Group B');
+
+      final selector = container.read(
+        proxyGroupSelectorStateProvider('Group A', 'be'),
+      );
+      expect(selector.proxies.single.name, 'Beta');
+      expect(selector.groupType, GroupType.Selector);
+
+      final missing = container.read(
+        proxyGroupSelectorStateProvider('Missing', ''),
+      );
+      expect(missing.proxies, isEmpty);
+      expect(missing.groupType, GroupType.Selector);
     },
   );
 
-  test('proxy search matches the proxy type and needs every term', () {
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => const [
-            Group(
-              name: 'Group A',
-              type: GroupType.Selector,
-              hidden: false,
-              all: [
-                Proxy(name: 'HK 01', type: 'Vmess'),
-                Proxy(name: 'HK 02', type: 'Trojan'),
-                Proxy(name: 'JP 01', type: 'Trojan'),
-              ],
-            ),
-          ],
-        );
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(mode: Mode.rule));
-
-    List<String> names(String query) => [
-      for (final proxy
-          in container.read(filterGroupsStateProvider(query)).value.single.all)
-        proxy.name,
-    ];
-
-    expect(names('trojan'), ['HK 02', 'JP 01']);
-    expect(names('hk TROJAN'), ['HK 02']);
-    expect(container.read(filterGroupsStateProvider('hk jp')).value, isEmpty);
-  });
-
-  test('runtime, VPN, tray, and DNS states follow live state', () async {
+  test('runtime, VPN, and tray states follow live state', () {
     container
         .read(runTimeProvider.notifier)
         .update((_) => DateTime(2026).millisecondsSinceEpoch);
@@ -512,7 +350,6 @@ void main() {
           (state) => state.copyWith(
             systemProxy: false,
             bypassDomain: const ['localhost'],
-            autoSetSystemDns: true,
           ),
         );
     container
@@ -524,7 +361,6 @@ void main() {
             tun: state.tun.copyWith(enable: true),
           ),
         );
-    expect(container.read(shouldPatchSystemDnsProvider), isFalse);
 
     container
         .read(authorizedTunEnableProvider.notifier)
@@ -533,7 +369,7 @@ void main() {
     final proxy = container.read(proxyStateProvider);
     expect(proxy.isStart, isTrue);
     expect(proxy.systemProxy, isFalse);
-    expect(proxy.bassDomain, ['localhost']);
+    expect(proxy.bypassDomain, ['localhost']);
     expect(proxy.port, 8899);
     expect(container.read(isStartProvider), isTrue);
 
@@ -542,87 +378,21 @@ void main() {
     expect(tray.port, 8899);
     expect(tray.tunEnable, isTrue);
     expect(tray.isStart, isTrue);
-
-    final vpn = await container.read(vpnOptionsProvider.future);
-    expect(vpn.stack, container.read(patchClashConfigProvider).tun.stack.name);
-    expect(vpn.port, 8899);
-    expect(vpn.bypassDomain, ['localhost']);
-
-    expect(container.read(shouldPatchSystemDnsProvider), isTrue);
+    expect(tray.showNetworkSpeed, isFalse);
 
     container
-        .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(autoSetSystemDns: false));
-    expect(container.read(shouldPatchSystemDnsProvider), isFalse);
-    container
-        .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(autoSetSystemDns: true));
+        .read(vpnSettingProvider.notifier)
+        .update((state) => state.copyWith(networkSpeedNotification: true));
+    expect(container.read(trayStateProvider).showNetworkSpeed, isTrue);
 
-    container
-        .read(authorizedTunEnableProvider.notifier)
-        .update((_) => TunAuthorizationState.unauthorized);
-    expect(container.read(shouldPatchSystemDnsProvider), isFalse);
+    final vpn = container.read(vpnStateProvider);
+    expect(vpn.stack, container.read(patchClashConfigProvider).tun.stack);
+    expect(vpn.vpnProps, container.read(vpnSettingProvider));
 
     container.read(excludeSSIDsProvider.notifier).update((_) => ['Office']);
     container.read(currentSSIDProvider.notifier).update((_) => 'Office');
     expect(container.read(suspendProvider), isTrue);
     expect(container.read(proxyStateProvider).isStart, isFalse);
-  });
-
-  test('safe mode keeps every host integration off', () async {
-    await AppLocalizations.load(const Locale('en'));
-    final scoped = ProviderContainer(
-      overrides: [
-        profilesProvider.overrideWith(TestProfiles.new),
-        safeModeProvider.overrideWithValue(true),
-      ],
-    );
-    addTearDown(scoped.dispose);
-    scoped.listen(sharedStateProvider, (_, _) {});
-    scoped.read(runTimeProvider.notifier).update((_) => 1);
-    scoped
-        .read(networkSettingProvider.notifier)
-        .update(
-          (state) => state.copyWith(systemProxy: true, autoSetSystemDns: true),
-        );
-    scoped
-        .read(patchClashConfigProvider.notifier)
-        .update(
-          (state) => state.copyWith(tun: state.tun.copyWith(enable: true)),
-        );
-    scoped
-        .read(authorizedTunEnableProvider.notifier)
-        .update((_) => TunAuthorizationState.authorized);
-    scoped
-        .read(vpnSettingProvider.notifier)
-        .update((state) => state.copyWith(enable: true, systemProxy: true));
-
-    scoped
-        .read(appSettingProvider.notifier)
-        .update((state) => state.copyWith(showTrayTitle: true));
-    scoped.listen(trayStateProvider, (_, _) {});
-    scoped
-        .read(hotKeyActionsProvider.notifier)
-        .update(
-          (_) => const [
-            HotKeyAction(
-              action: HotAction.view,
-              key: 1,
-              modifiers: {KeyboardModifier.control},
-            ),
-          ],
-        );
-
-    final tray = scoped.read(trayStateProvider);
-    expect(tray.safeMode, isTrue);
-    expect(tray.showTrayTitle, isTrue);
-    expect(tray.hotKeys.keys, [HotAction.view]);
-    expect(scoped.read(trayTitleStateProvider).showTrayTitle, isTrue);
-    expect(scoped.read(shouldPatchSystemDnsProvider), isFalse);
-    await scoped.read(vpnOptionsProvider.future);
-    final vpnOptions = scoped.read(sharedStateProvider).vpnOptions!;
-    expect(vpnOptions.enable, isFalse);
-    expect(vpnOptions.systemProxy, isFalse);
   });
 
   test('selection and delay providers resolve groups and profile state', () {
@@ -659,70 +429,35 @@ void main() {
       'Leaf',
     );
     expect(container.read(delayProvider(proxyName: 'Selector')), 42);
+    expect(
+      container.read(
+        proxyDescProvider(const Proxy(name: 'Selector', type: 'Selector')),
+      ),
+      'Selector(Leaf)',
+    );
+    expect(
+      container.read(
+        proxyDescProvider(const Proxy(name: 'Leaf', type: 'Direct')),
+      ),
+      'Direct',
+    );
   });
 
-  test('tray delays follow the listed groups and their test URLs', () {
-    const probeUrl = 'https://probe.example/204';
-    container
-        .read(groupsProvider.notifier)
-        .update(
-          (_) => const [
-            Group(
-              name: 'Selector',
-              type: GroupType.Selector,
-              hidden: false,
-              all: [
-                Proxy(name: 'Leaf', type: 'Direct'),
-                Proxy(name: 'Idle', type: 'Direct'),
-              ],
-            ),
-            Group(
-              name: 'Probe',
-              type: GroupType.URLTest,
-              hidden: false,
-              testUrl: probeUrl,
-              all: [Proxy(name: 'Leaf', type: 'Direct')],
-            ),
-          ],
-        );
-    container.read(delayDataSourceProvider.notifier)
-      ..setDelay(const Delay(name: 'Leaf', url: defaultTestUrl, value: 42))
-      ..setDelay(const Delay(name: 'Leaf', url: probeUrl, value: -1));
+  test('selection follows the groups profile until groups reload', () {
+    final loaded = Profile.normal().copyWith(selectedMap: {'Selector': 'A'});
+    final next = Profile.normal().copyWith(
+      id: loaded.id + 1,
+      selectedMap: {'Selector': 'B'},
+    );
+    _profiles(container).replace([loaded, next]);
+    container.read(currentProfileIdProvider.notifier).update((_) => loaded.id);
+    container.read(groupsProfileIdProvider.notifier).update((_) => loaded.id);
 
-    expect(container.read(trayDelaysProvider), {
-      'Selector': {'Leaf': 42},
-      'Probe': {'Leaf': -1},
-    });
-  });
+    container.read(currentProfileIdProvider.notifier).update((_) => next.id);
+    expect(container.read(selectedMapProvider), {'Selector': 'A'});
 
-  test('tray hotkeys leave out bindings that cannot fire', () {
-    container.listen(trayStateProvider, (_, _) {});
-    container
-        .read(hotKeyActionsProvider.notifier)
-        .update(
-          (_) => const [
-            HotKeyAction(
-              action: HotAction.view,
-              key: 1,
-              modifiers: {KeyboardModifier.control},
-            ),
-            HotKeyAction(
-              action: HotAction.start,
-              key: 2,
-              modifiers: {KeyboardModifier.capsLock},
-            ),
-            HotKeyAction(
-              action: HotAction.tun,
-              key: 3,
-              modifiers: {KeyboardModifier.control},
-            ),
-          ],
-        );
-    container.read(hotKeyFailuresProvider.notifier).value = {
-      HotAction.tun: 'taken',
-    };
-
-    expect(container.read(trayStateProvider).hotKeys.keys, [HotAction.view]);
+    container.read(groupsProfileIdProvider.notifier).update((_) => next.id);
+    expect(container.read(selectedMapProvider), {'Selector': 'B'});
   });
 
   test('theme and simple derived providers cover fallback branches', () {
@@ -748,25 +483,34 @@ void main() {
       container.read(realTestUrlProvider('https://custom.test')),
       'https://custom.test',
     );
-  });
-
-  test('a color scheme outlives the provider that generated it', () {
-    final provider = genColorSchemeProvider(
-      Brightness.dark,
-      color: Colors.teal,
+    expect(container.read(isCurrentPageProvider(PageLabel.dashboard)), isTrue);
+    expect(
+      container.read(
+        isCurrentPageProvider(
+          PageLabel.logs,
+          handler: (_, viewMode) => viewMode == ViewMode.mobile,
+        ),
+      ),
+      isTrue,
     );
-    final first = container.read(provider);
-    container.invalidate(provider);
-
-    expect(container.read(provider), same(first));
-
-    container
-        .read(themeSettingProvider.notifier)
-        .update((state) => state.copyWith(colorStyle: ColorStyle.soft));
-    expect(container.read(provider), isNot(same(first)));
   });
 
-  test('hotkey, profile, and extend providers expose defaults', () {
+  test('package, hotkey, profile, and overwrite providers expose defaults', () {
+    const package = Package(
+      packageName: 'app.example',
+      label: 'Example',
+      system: false,
+      internet: true,
+      lastUpdateTime: 1,
+    );
+    container.read(packagesProvider.notifier).update((_) => [package]);
+    final packageList = container.read(packageListSelectorStateProvider);
+    expect(packageList.packages, [package]);
+    expect(
+      packageList.accessControlProps,
+      container.read(vpnSettingProvider).accessControlProps,
+    );
+
     const action = HotKeyAction(
       action: HotAction.start,
       key: 1,
@@ -779,11 +523,16 @@ void main() {
       HotAction.tun,
     );
 
-    final profile = Profile.normal().copyWith(extendType: ExtendType.script);
+    final profile = Profile.normal().copyWith(
+      overwriteType: OverwriteType.custom,
+    );
     _profiles(container).replace([profile]);
     expect(container.read(profileProvider(profile.id)), profile);
-    expect(container.read(extendTypeProvider(profile.id)), ExtendType.script);
-    expect(container.read(extendTypeProvider(-1)), ExtendType.standard);
+    expect(
+      container.read(overwriteTypeProvider(profile.id)),
+      OverwriteType.custom,
+    );
+    expect(container.read(overwriteTypeProvider(-1)), OverwriteType.standard);
 
     expect(
       container.read(accessControlStateProvider),
@@ -791,133 +540,109 @@ void main() {
     );
   });
 
-  test(
-    'a custom profile is no proxy provider and has no config file',
-    () async {
-      final subscription = Profile.normal(label: 'Sub');
-      final file = Profile.normal(label: 'File');
-      final custom = Profile.custom(label: 'Mine');
-      _profiles(container).replace([subscription, file, custom]);
-
-      expect(container.read(profileProvidersProvider), {
-        'Sub': subscription.id,
-        'File': file.id,
-      });
-      expect(
-        await container.read(clashConfigProvider(custom.id).future),
-        const ClashConfig(),
-      );
-    },
-  );
-
   test('shared state hands the VPN service the resolved route list', () async {
     await AppLocalizations.load(const Locale('en'));
     container.listen(sharedStateProvider, (_, _) {});
     container
-        .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(bypassPrivateRoute: false));
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(collapseQuickSettingsPanel: false));
     container
         .read(patchClashConfigProvider.notifier)
         .update(
           (state) => state.copyWith(
-            tun: state.tun.copyWith(routeAddress: const ['10.0.0.0/8']),
+            tun: state.tun.copyWith(
+              mtu: 1500,
+              routeAddress: const ['10.0.0.0/8'],
+              disableIcmpForwarding: true,
+              endpointIndependentNat: true,
+              congestionController: TunCongestionController.bbr,
+            ),
           ),
-        );
-    await container.read(vpnOptionsProvider.future);
-    expect(container.read(sharedStateProvider).vpnOptions?.routeAddress, [
-      '10.0.0.0/8',
-      '::/0',
-    ]);
-
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update(
-          (state) => state.copyWith(tun: state.tun.copyWith(routeAddress: [])),
         );
     container
         .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(bypassPrivateRoute: true));
-    await container.read(vpnOptionsProvider.future);
-    expect(
-      container.read(sharedStateProvider).vpnOptions?.routeAddress,
-      subtractCidrs(const [], privateRouteAddress, wholeWhenEmpty: true),
-    );
-  });
-
-  test('only the route lists recompute the VPN routes', () async {
-    final computed = <List<String>?>[];
-    container.listen(
-      vpnRouteAddressProvider,
-      (_, next) => computed.add(next.value),
-      fireImmediately: true,
-    );
-    await container.read(vpnRouteAddressProvider.future);
-    computed.clear();
-
+        .update((state) => state.copyWith(routeMode: RouteMode.config));
     container
         .read(vpnSettingProvider.notifier)
-        .update((state) => state.copyWith(ipv6: !state.ipv6));
-    container
-        .read(patchClashConfigProvider.notifier)
         .update(
           (state) => state.copyWith(
-            mixedPort: state.mixedPort + 1,
-            tun: state.tun.copyWith(mtu: state.tun.mtu - 1),
+            suspendSupport: false,
+            networkSpeedNotification: true,
+            includeAllNetworks: true,
+            excludeLocalNetworks: false,
           ),
         );
-    await container.read(vpnOptionsProvider.future);
-    expect(computed, isEmpty);
+    container.read(alwaysOnProvider.notifier).value = true;
+    container
+        .read(excludeSSIDsProvider.notifier)
+        .update((_) => const ['Office']);
+    final sharedState = container.read(sharedStateProvider);
+    expect(container.read(sharedStateProvider).vpnOptions?.routeAddress, [
+      '10.0.0.0/8',
+    ]);
+    expect(sharedState.vpnOptions?.mtu, 1500);
+    expect(sharedState.vpnOptions?.disableIcmpForwarding, true);
+    expect(sharedState.vpnOptions?.endpointIndependentNat, true);
+    expect(
+      sharedState.vpnOptions?.congestionController,
+      TunCongestionController.bbr,
+    );
+    expect(sharedState.vpnOptions?.suspendSupport, false);
+    expect(sharedState.vpnOptions?.includeAllNetworks, true);
+    expect(sharedState.vpnOptions?.excludeLocalNetworks, false);
+    expect(sharedState.networkSpeedNotification, true);
+    expect(sharedState.collapseQuickSettingsPanel, false);
+    expect(sharedState.alwaysOn, true);
+    expect(sharedState.excludeSSIDs, ['Office']);
 
     container
-        .read(patchClashConfigProvider.notifier)
-        .update(
-          (state) => state.copyWith(
-            tun: state.tun.copyWith(routeExcludeAddress: ['10.0.0.0/8']),
-          ),
-        );
-    await container.read(vpnRouteAddressProvider.future);
-    expect(computed.last, isNot(contains('0.0.0.0/0')));
+        .read(networkSettingProvider.notifier)
+        .update((state) => state.copyWith(routeMode: RouteMode.bypassPrivate));
+    expect(
+      container.read(sharedStateProvider).vpnOptions?.routeAddress,
+      defaultBypassPrivateRouteAddress,
+    );
   });
 
-  test('shared state keeps the last routes while new ones compute', () async {
+  test('shared state hands the home widgets the app color scheme', () async {
     await AppLocalizations.load(const Locale('en'));
     container.listen(sharedStateProvider, (_, _) {});
     container
-        .read(networkSettingProvider.notifier)
-        .update((state) => state.copyWith(bypassPrivateRoute: false));
-    container
-        .read(patchClashConfigProvider.notifier)
+        .read(themeSettingProvider.notifier)
         .update(
           (state) => state.copyWith(
-            tun: state.tun.copyWith(routeAddress: const ['10.0.0.0/8']),
+            primaryColor: 0xFF123456,
+            themeMode: ThemeMode.dark,
+            pureBlack: true,
           ),
         );
-    await container.read(vpnOptionsProvider.future);
 
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update(
-          (state) => state.copyWith(
-            tun: state.tun.copyWith(routeAddress: const ['172.16.0.0/12']),
-          ),
-        );
-    expect(container.read(sharedStateProvider).vpnOptions?.routeAddress, [
-      '10.0.0.0/8',
-      '::/0',
-    ]);
-
-    await container.read(vpnOptionsProvider.future);
-    expect(container.read(sharedStateProvider).vpnOptions?.routeAddress, [
-      '172.16.0.0/12',
-      '::/0',
-    ]);
+    final widgetTheme = container.read(sharedStateProvider).widgetTheme!;
+    final light = container.read(genColorSchemeProvider(Brightness.light));
+    expect(widgetTheme.themeMode, ThemeMode.dark);
+    expect(widgetTheme.light, WidgetColors.fromScheme(light));
+    expect(widgetTheme.light.primary, light.primary.toARGB32());
+    expect(
+      widgetTheme.dark.background,
+      container
+          .read(genColorSchemeProvider(Brightness.dark))
+          .toPureBlack(true)
+          .surfaceContainer
+          .toARGB32(),
+    );
+    expect(
+      json.decode(json.encode(widgetTheme))['dark']['primary'],
+      container
+          .read(genColorSchemeProvider(Brightness.dark))
+          .primary
+          .toARGB32(),
+    );
   });
 
   // VpnService.setHttpProxy cannot carry credentials.
   test('local authentication withholds the VPN system proxy', () async {
     await AppLocalizations.load(const Locale('en'));
     container.listen(sharedStateProvider, (_, _) {});
-    await container.read(vpnOptionsProvider.future);
     expect(container.read(sharedStateProvider).vpnOptions?.systemProxy, true);
 
     container
@@ -931,7 +656,6 @@ void main() {
             ),
           ),
         );
-    await container.read(vpnOptionsProvider.future);
     expect(container.read(sharedStateProvider).vpnOptions?.systemProxy, false);
     expect(container.read(updateParamsProvider).authentication, ['user:pass']);
 
@@ -942,50 +666,60 @@ void main() {
             authentication: const AuthenticationProps(enable: false),
           ),
         );
-    await container.read(vpnOptionsProvider.future);
     expect(container.read(sharedStateProvider).vpnOptions?.systemProxy, true);
     expect(container.read(updateParamsProvider).authentication, isEmpty);
   });
 
-  test('the setup patch changes only with what a re-apply carries', () {
-    container.listen(setupPatchProvider, (_, _) {});
-    final initial = container.read(setupPatchProvider);
-
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update(
-          (state) => state.copyWith(
-            mode: Mode.global,
-            mixedPort: 8899,
-            tun: state.tun.copyWith(enable: true),
-          ),
-        );
-    expect(container.read(setupPatchProvider), initial);
-
-    container
-        .read(patchClashConfigProvider.notifier)
-        .update((state) => state.copyWith(hosts: const {'a.test': '1.1.1.1'}));
-    final withHosts = container.read(setupPatchProvider);
-    expect(withHosts, isNot(initial));
+  test('desktop auto route reaches the core update', () {
+    container.listen(updateParamsProvider, (_, _) {});
+    expect(container.read(updateParamsProvider).tun.autoRoute, isTrue);
 
     container
         .read(networkSettingProvider.notifier)
-        .update(
-          (state) => state.copyWith(appendSystemDns: !state.appendSystemDns),
-        );
-    final withSystemDns = container.read(setupPatchProvider);
-    expect(withSystemDns, isNot(withHosts));
+        .update((state) => state.copyWith(desktopAutoRoute: false));
+
+    expect(container.read(updateParamsProvider).tun.autoRoute, isFalse);
+  }, skip: !system.isDesktop);
+
+  test('clearing a TUN override reloads the profile', () {
+    container.listen(profileReloadStateProvider, (_, _) {});
+    final initial = container.read(profileReloadStateProvider);
 
     container
-        .read(networkSettingProvider.notifier)
-        .update(
-          (state) =>
-              state.copyWith(bypassPrivateRoute: !state.bypassPrivateRoute),
-        );
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith.tun(autoRedirect: true));
+    final overridden = container.read(profileReloadStateProvider);
+    expect(overridden, isNot(initial));
+
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith.tun(autoRedirect: false));
+    expect(container.read(profileReloadStateProvider), overridden);
+
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith.tun(autoRedirect: null));
+    expect(container.read(profileReloadStateProvider), initial);
+  });
+
+  test('shared state carries the quick settings profile visibility', () async {
+    await AppLocalizations.load(const Locale('en'));
+    container.listen(sharedStateProvider, (_, _) {});
     expect(
-      container.read(setupPatchProvider),
-      system.isDesktop ? isNot(withSystemDns) : withSystemDns,
+      container.read(sharedStateProvider).showQuickSettingsProfileName,
+      true,
     );
+
+    container
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(showQuickSettingsProfileName: false));
+    final state = container.read(sharedStateProvider).needSyncSharedState;
+    expect(state.showQuickSettingsProfileName, false);
+    final json = jsonDecode(jsonEncode(state)) as Map<String, Object?>;
+    expect(json['showQuickSettingsProfileName'], false);
+    expect(SharedState.fromJson(json).showQuickSettingsProfileName, false);
+    final legacyJson = json..remove('showQuickSettingsProfileName');
+    expect(SharedState.fromJson(legacyJson).showQuickSettingsProfileName, true);
   });
 
   test('shared state carries the notification stop action switch', () async {

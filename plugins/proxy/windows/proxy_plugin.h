@@ -11,8 +11,8 @@
 
 namespace proxy {
 
-// Turns off a system proxy that still points at FlClash's address while
-// nothing listens on its port any more, the state a killed app leaves behind.
+// Turns off the system proxy FlClash recorded applying for the current user
+// once nothing listens on its port any more, the state a killed app leaves.
 bool ClearStaleProxy();
 
 class ProxyPlugin : public flutter::Plugin {
@@ -40,7 +40,8 @@ class ProxyPlugin : public flutter::Plugin {
  private:
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
   int window_proc_id_ = -1;
-  // Whether this process is the one that pointed Windows at a proxy.
+  UINT release_proxy_message_ = 0;
+  // A failed setup or cleanup can leave proxy settings applied.
   bool proxy_applied_ = false;
 };
 

@@ -20,7 +20,10 @@ class MethodChannelProxy extends ProxyPlatform {
   }
 
   @override
-  Future<bool> stopProxy() async {
-    return await methodChannel.invokeMethod<bool>(_stopProxyMethod) ?? false;
+  Future<bool> stopProxy({bool onlyIfNeeded = false}) async {
+    return await methodChannel.invokeMethod<bool>(_stopProxyMethod, {
+          'onlyIfNeeded': onlyIfNeeded,
+        }) ??
+        false;
   }
 }

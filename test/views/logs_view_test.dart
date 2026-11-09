@@ -1,16 +1,14 @@
-import 'dart:math';
-
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/views.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../helpers/scrollbar.dart';
 import '../helpers/test_app.dart';
 
 void main() {
@@ -23,15 +21,30 @@ void main() {
     (i) => Log(payload: 'log $i', dateTime: '2024-01-01 12:00:$i'),
   );
 
-  Future<void> pumpLogsView(WidgetTester tester) async {
+  Future<void> pumpLogsView(
+    WidgetTester tester, {
+    bool seedBeforeMount = false,
+  }) async {
     tester.view.physicalSize = const Size(1400, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    container = ProviderContainer();
+    container = ProviderContainer(
+      overrides: [
+        patchClashConfigProvider.overrideWithValue(
+          const PatchClashConfig(logLevel: LogLevel.debug),
+        ),
+      ],
+    );
     addTearDown(container.dispose);
     globalState.container = container;
+    final notifier = container.read(logsProvider.notifier);
+    if (seedBeforeMount) {
+      for (final log in seedLogs()) {
+        notifier.add(log);
+      }
+    }
 
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -39,9 +52,10 @@ void main() {
         child: const TestApp(child: LogsView()),
       ),
     );
-    final notifier = container.read(logsProvider.notifier);
-    for (final log in seedLogs()) {
-      notifier.add(log);
+    if (!seedBeforeMount) {
+      for (final log in seedLogs()) {
+        notifier.add(log);
+      }
     }
     await tester.pump(const Duration(milliseconds: 301));
     await tester.pumpAndSettle();
@@ -51,15 +65,68 @@ void main() {
 
   Finder hintFinder() => find.byKey(hintKey);
 
-  testWidgets('holding the scrollbar thumb floats the time hint beside it', (
+  for (final group in ['Source', 'Level']) {
+    testWidgets('$group filters support live multi-selection and deselection', (
+      tester,
+    ) async {
+      await pumpLogsView(tester, seedBeforeMount: true);
+      final options = group == 'Source' ? ['APP', 'CORE'] : ['INFO', 'ERROR'];
+      final menu = find.byType(CommonPopupMenu);
+      Finder option(String label) =>
+          find.descendant(of: menu, matching: find.text(label));
+      final checks = find.descendant(
+        of: menu,
+        matching: find.byIcon(Symbols.check),
+      );
+
+      await tester.tap(find.byIcon(Symbols.filter_alt));
+      await tester.pumpAndSettle();
+      await tester.tap(option(group));
+      await tester.pumpAndSettle();
+      expect(checks, findsNothing);
+
+      for (var i = 0; i < options.length; i++) {
+        await tester.tap(option(options[i]));
+        await tester.pumpAndSettle();
+        expect(menu, findsOneWidget);
+        expect(option(options[i]), findsOneWidget);
+        expect(checks, findsNWidgets(i + 1));
+      }
+
+      await tester.tap(option(options.first));
+      await tester.pumpAndSettle();
+      expect(checks, findsOneWidget);
+      expect(find.text('log 199'), findsNothing);
+
+      await tester.tap(option(options.last));
+      await tester.pumpAndSettle();
+      expect(menu, findsOneWidget);
+      expect(checks, findsNothing);
+      expect(find.text('log 199'), findsOneWidget);
+
+      await tester.tapAt(const Offset(10, 900));
+      await tester.pumpAndSettle();
+      expect(menu, findsNothing);
+    });
+  }
+
+  testWidgets('opens stored logs at the newest entry', (tester) async {
+    await pumpLogsView(tester, seedBeforeMount: true);
+
+    expect(find.text('log 199'), findsOneWidget);
+    expect(find.text('log 0'), findsNothing);
+  });
+
+  testWidgets('dragging the list floats the time hint next to the scrollbar', (
     tester,
   ) async {
     await pumpLogsView(tester);
     expect(hintFinder(), findsNothing);
 
-    final thumb = await revealScrollbarThumb(tester);
-    final gesture = await tester.startGesture(thumb);
-    await gesture.moveBy(const Offset(0, -1));
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(Scrollable).first),
+    );
+    await gesture.moveBy(const Offset(0, 300));
     await tester.pump();
 
     expect(hintFinder(), findsOneWidget);
@@ -69,41 +136,38 @@ void main() {
     expect(seedLogs().map((log) => log.dateTime), contains(label.data));
 
     final scrollableRect = tester.getRect(find.byType(Scrollable).first);
-    // The list runs under the bar, so the scrollbar track starts at the
-    // bar's foot. The minimum thumb length is 48, so at the newest end the
-    // thumb center rests 24 dp below the track's top edge.
-    final trackTop = tester.getRect(find.byType(AppBar)).bottom;
-    expect(tester.getCenter(find.byKey(hintKey)).dy, closeTo(trackTop + 24, 6));
-
-    await gesture.moveBy(const Offset(0, 2000));
-    await tester.pump();
-    // Nothing floats over the foot, so the pill follows the thumb all the
-    // way down and rests centred on it, the thumb being the track's share of
-    // the content, both less the part under the bar.
-    final position = tester
-        .widget<Scrollable>(find.byType(Scrollable).first)
-        .controller!
-        .position;
-    final underBar = trackTop - scrollableRect.top;
-    final thumbExtent = max(
-      48.0,
-      (scrollableRect.bottom - trackTop) *
-          (position.viewportDimension - underBar) /
-          (position.maxScrollExtent + position.viewportDimension - underBar),
-    );
+    // The hint is pinned to the scrollbar thumb. Material's minimum thumb
+    // length is 48, so at the newest end the thumb center rests 24px below
+    // the track's top edge.
     expect(
       tester.getCenter(find.byKey(hintKey)).dy,
-      closeTo(scrollableRect.bottom - thumbExtent / 2, 2),
+      closeTo(scrollableRect.top + 24, 6),
+    );
+
+    for (var i = 0; i < 25; i++) {
+      await gesture.moveBy(const Offset(0, -2000));
+      await tester.pump();
+    }
+    // Near the oldest end the pill bottom-aligns above the FAB zone
+    // (56px FAB + 16px margin) with an 8px gap instead of following
+    // the thumb into it.
+    expect(
+      tester.getRect(find.byKey(hintKey)).bottom,
+      closeTo(scrollableRect.bottom - 72 - 8, 2),
     );
 
     await gesture.up();
-    // The pill outlives the gesture briefly so letting go and grabbing again
-    // does not blink it.
+    // The pill outlives the gesture briefly so transient scroll ends do not
+    // blink it. No pumpAndSettle here: the fling's ballistic keeps frames
+    // scheduled for seconds of fake time, which would elapse straight past
+    // the hide window.
     await tester.pump(const Duration(milliseconds: 100));
     expect(hintFinder(), findsOneWidget);
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.pumpAndSettle();
+    for (var i = 0; i < 20 && hintFinder().evaluate().isNotEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     expect(hintFinder(), findsNothing);
+    await tester.pumpAndSettle();
   });
 
   testWidgets('auto scroll-to-end on new logs keeps the hint hidden', (
@@ -121,49 +185,23 @@ void main() {
     expect(hintFinder(), findsNothing);
   });
 
-  testWidgets('a one-line log is only as tall as its content', (tester) async {
-    await tester.pumpWidget(
-      const TestApp(
-        child: Scaffold(
-          body: Column(
-            children: [
-              LogItem(
-                log: Log(payload: 'short', dateTime: '2024-01-01 12:00:00'),
-              ),
-            ],
-          ),
-        ),
-      ),
+  testWidgets('uses the save icon and selectable body text for log rows', (
+    tester,
+  ) async {
+    await pumpLogsView(tester);
+
+    expect(find.byIcon(Symbols.save), findsOneWidget);
+    expect(find.byIcon(Symbols.save_as), findsNothing);
+    expect(find.byType(CommonChip), findsNothing);
+    final payload = tester.widget<SelectableText>(
+      find.widgetWithText(SelectableText, 'log 199'),
     );
-
-    final item = tester.getRect(find.byType(LogItem));
-    final header = tester.getRect(find.byType(RecordHeader));
-    final body = tester.getRect(find.byType(SelectableText));
-    expect(header.top - item.top, 10);
-    expect(item.bottom - body.bottom, 12);
-  });
-
-  testWidgets('tapping the level reports it for filtering', (tester) async {
-    String? clicked;
-    await tester.pumpWidget(
-      TestApp(
-        child: Scaffold(
-          body: LogItem(
-            log: const Log(
-              logLevel: LogLevel.warning,
-              payload:
-                  '[TCP] dial Proxy 10.0.0.2:1 --> a.example:443 error: EOF',
-              dateTime: '2024-01-01 12:00:00',
-            ),
-            onClick: (value) => clicked = value,
-          ),
-        ),
-      ),
+    expect(
+      payload.style?.fontSize,
+      Theme.of(
+        tester.element(find.text('log 199')),
+      ).textTheme.bodyMedium?.fontSize,
     );
-
-    await tester.tap(find.text('warning'));
-
-    expect(clicked, 'warning');
   });
 
   group('LogListController', () {

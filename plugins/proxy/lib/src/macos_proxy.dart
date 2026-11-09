@@ -4,12 +4,15 @@ import 'proxy_command.dart';
 
 class MacosProxy {
   final ProxyCommandRunner _commandRunner;
+  bool _needsCleanup = false;
 
   MacosProxy({required ProxyCommandRunner commandRunner})
     : _commandRunner = commandRunner;
 
   Future<bool> start(int port, List<String> bypassDomain) async {
     final services = await _networkServices();
+    if (services.isEmpty) return false;
+    _needsCleanup = true;
     return _commandRunner.run(
       services.expand(
         (service) => MacosProxyCommands.buildStart(service, port, bypassDomain),
@@ -17,9 +20,15 @@ class MacosProxy {
     );
   }
 
-  Future<bool> stop() async {
+  Future<bool> stop({bool onlyIfNeeded = false}) async {
+    if (onlyIfNeeded && !_needsCleanup) return true;
+    _needsCleanup = true;
     final services = await _networkServices();
-    return _commandRunner.run(services.expand(MacosProxyCommands.buildStop));
+    final stopped = await _commandRunner.run(
+      services.expand(MacosProxyCommands.buildStop),
+    );
+    if (stopped) _needsCleanup = false;
+    return stopped;
   }
 
   Future<List<String>> _networkServices() async {

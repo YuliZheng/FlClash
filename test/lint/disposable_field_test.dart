@@ -20,9 +20,10 @@ const _allowed = {
   // `CoreEventManager` is a private-constructor singleton that fans core events
   // out for the whole run; closing its controller would end event delivery.
   'lib/core/event.dart#_controller',
-  // `App` is the process-wide Android plugin; the notifier relays keyboard
-  // state from the platform channel for the whole run.
-  'lib/plugins/app.dart#floatingKeyboard',
+  // `GlobalState` is process-scoped and owns foreground state until exit.
+  'lib/state.dart#isBackground',
+  // The Service singleton retains native tunnel snapshots until process exit.
+  'lib/plugins/service.dart#_tunnelState',
 };
 
 final _declaration = RegExp(
@@ -56,7 +57,7 @@ void main() {
       if (entity is! File || !entity.path.endsWith('.dart')) {
         continue;
       }
-      final relative = p.relative(entity.path);
+      final relative = p.relative(entity.path).replaceAll('\\', '/');
       if (_isGenerated(relative)) {
         continue;
       }

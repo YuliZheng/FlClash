@@ -4,7 +4,6 @@ class _CodeForgeState extends State<CodeForge>
     with TickerProviderStateMixin, WidgetsBindingObserver
     implements CodeForgeView {
   late final ScrollController _hscrollController, _vscrollController;
-  ScrollController? _ownedVscrollController;
   late CodeForgeController _controller;
   late final FocusNode _focusNode;
   late final AnimationController _caretBlinkController;
@@ -24,9 +23,9 @@ class _CodeForgeState extends State<CodeForge>
     MagnifierInfo.empty,
   );
   final MagnifierController _magnifierController = MagnifierController();
-  final _isMobile = Platform.isAndroid || Platform.isIOS;
+  bool get _isMobile =>
+      widget.isMobile ?? (Platform.isAndroid || Platform.isIOS);
   GlobalKey _codeFieldKey = GlobalKey();
-  TwoDimensionalChildBuilderDelegate? _fieldDelegate;
   final GlobalKey _editorStackKey = GlobalKey();
   TextInputConnection? _connection;
   bool _isHovering = false;
@@ -38,9 +37,7 @@ class _CodeForgeState extends State<CodeForge>
     WidgetsBinding.instance.addObserver(this);
     _focusNode = FocusNode();
     _hscrollController = ScrollController();
-    _vscrollController =
-        widget.verticalScrollController ??
-        (_ownedVscrollController = ScrollController());
+    _vscrollController = ScrollController();
     _selectionActiveNotifier = ValueNotifier(false);
     _magnifierNotifier.addListener(_syncMagnifier);
     _selectionStyle = widget.selectionStyle ?? CodeSelectionStyle();
@@ -196,8 +193,7 @@ class _CodeForgeState extends State<CodeForge>
     _scrollbarLineNumberIndicator.dispose();
     _focusNode.dispose();
     _hscrollController.dispose();
-    _ownedVscrollController?.dispose();
-    _fieldDelegate?.dispose();
+    _vscrollController.dispose();
     super.dispose();
   }
 
@@ -247,64 +243,6 @@ class _CodeForgeState extends State<CodeForge>
     if (_ownsUndoController) _undoRedoController.dispose();
   }
 
-  Map<Type, GestureRecognizerFactory> get _fieldGestures => {
-    TapGestureRecognizer:
-        GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-          TapGestureRecognizer.new,
-          (tap) => tap.onTap = () {
-            if (_isMobile) return;
-            _focusNode.requestFocus();
-          },
-        ),
-    if (_isMobile)
-      _SelectionDragHold:
-          GestureRecognizerFactoryWithHandlers<_SelectionDragHold>(
-            () => _SelectionDragHold(_selectionActiveNotifier),
-            (_) {},
-          ),
-  };
-
-  // A new delegate is what makes the viewport rebuild the field, and the
-  // viewport listens to the old one until it takes the new.
-  TwoDimensionalChildBuilderDelegate _nextFieldDelegate() {
-    final previous = _fieldDelegate;
-    if (previous != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
-    }
-    return _fieldDelegate = TwoDimensionalChildBuilderDelegate(
-      maxXIndex: 0,
-      maxYIndex: 0,
-      builder: (_, vic) {
-        return Focus(
-          focusNode: _focusNode,
-          onKeyEvent: _handleKeyEvent,
-          child: _CodeField(
-            key: _codeFieldKey,
-            controller: _controller,
-            editorTheme: widget.editorTheme,
-            language: widget.language,
-            innerPadding: widget.innerPadding,
-            vscrollController: _vscrollController,
-            hscrollController: _hscrollController,
-            focusNode: _focusNode,
-            readOnly: _readOnly,
-            caretBlinkController: _caretBlinkController,
-            lineHighlightController: _lineHighlightController,
-            textStyle: widget.textStyle,
-            gutterStyle: _gutterStyle,
-            selectionStyle: _selectionStyle,
-            isMobile: _isMobile,
-            selectionActiveNotifier: _selectionActiveNotifier,
-            onContextMenuRequest: _handleContextMenuRequest,
-            lineWrap: widget.lineWrap,
-            caretRectNotifier: _caretRectNotifier,
-            magnifierNotifier: _magnifierNotifier,
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -313,10 +251,34 @@ class _CodeForgeState extends State<CodeForge>
           ListenableBuilder(
             listenable: _findController,
             builder: (context, _) {
-              if (!_findController.isActive) {
-                return const SizedBox.shrink();
-              }
-              return widget.finderBuilder!(context, _findController);
+              final visible = _findController.isActive;
+              return ExcludeFocus(
+                excluding: !visible,
+                child: IgnorePointer(
+                  ignoring: !visible,
+                  child: AnimatedSwitcher(
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 120),
+                    switchInCurve: Easing.standardDecelerate,
+                    switchOutCurve: Easing.standardAccelerate,
+                    transitionBuilder: (child, animation) => SizeTransition(
+                      sizeFactor: animation,
+                      alignment: Alignment.topCenter,
+                      child: FadeTransition(opacity: animation, child: child),
+                    ),
+                    child: visible
+                        ? KeyedSubtree(
+                            key: const ValueKey(true),
+                            child: widget.finderBuilder!(
+                              context,
+                              _findController,
+                            ),
+                          )
+                        : const SizedBox.shrink(key: ValueKey(false)),
+                  ),
+                ),
+              );
             },
           ),
         Expanded(
@@ -328,8 +290,11 @@ class _CodeForgeState extends State<CodeForge>
                 RawScrollbar(
                   thumbVisibility: _isHovering,
                   controller: _hscrollController,
-                  child: RawGestureDetector(
-                    gestures: _fieldGestures,
+                  child: GestureDetector(
+                    onTap: () {
+                      if (_isMobile) return;
+                      _focusNode.requestFocus();
+                    },
                     child: MouseRegion(
                       onEnter: (event) {
                         if (mounted) {
@@ -365,7 +330,42 @@ class _CodeForgeState extends State<CodeForge>
                                   horizontalAxisDirection: AxisDirection.right,
                                   mainAxis: Axis.vertical,
                                   lineWrap: widget.lineWrap,
-                                  delegate: _nextFieldDelegate(),
+                                  delegate: TwoDimensionalChildBuilderDelegate(
+                                    maxXIndex: 0,
+                                    maxYIndex: 0,
+                                    builder: (_, vic) {
+                                      return Focus(
+                                        focusNode: _focusNode,
+                                        onKeyEvent: _handleKeyEvent,
+                                        child: _CodeField(
+                                          key: _codeFieldKey,
+                                          controller: _controller,
+                                          editorTheme: widget.editorTheme,
+                                          language: widget.language,
+                                          innerPadding: widget.innerPadding,
+                                          vscrollController: _vscrollController,
+                                          hscrollController: _hscrollController,
+                                          focusNode: _focusNode,
+                                          readOnly: _readOnly,
+                                          caretBlinkController:
+                                              _caretBlinkController,
+                                          lineHighlightController:
+                                              _lineHighlightController,
+                                          textStyle: widget.textStyle,
+                                          gutterStyle: _gutterStyle,
+                                          selectionStyle: _selectionStyle,
+                                          isMobile: _isMobile,
+                                          selectionActiveNotifier:
+                                              _selectionActiveNotifier,
+                                          onContextMenuRequest:
+                                              _handleContextMenuRequest,
+                                          lineWrap: widget.lineWrap,
+                                          caretRectNotifier: _caretRectNotifier,
+                                          magnifierNotifier: _magnifierNotifier,
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 ),
                           );
                         },
@@ -407,45 +407,4 @@ class _CodeForgeState extends State<CodeForge>
       ],
     );
   }
-}
-
-/// Wins the drag a touch selection follows, which the scroll views give up
-/// as it starts, so a sheet or route around the editor never moves with it.
-class _SelectionDragHold extends OneSequenceGestureRecognizer {
-  _SelectionDragHold(this._selecting);
-
-  final ValueListenable<bool> _selecting;
-  var _held = false;
-
-  @override
-  void addAllowedPointer(PointerDownEvent event) {
-    super.addAllowedPointer(event);
-    _held = false;
-    _holdIfSelecting();
-  }
-
-  @override
-  void handleEvent(PointerEvent event) {
-    if (event is PointerMoveEvent) {
-      _holdIfSelecting();
-    } else if (event is PointerUpEvent || event is PointerCancelEvent) {
-      if (!_held) resolve(GestureDisposition.rejected);
-      stopTrackingPointer(event.pointer);
-    }
-  }
-
-  void _holdIfSelecting() {
-    if (_held || !_selecting.value) return;
-    _held = true;
-    resolve(GestureDisposition.accepted);
-  }
-
-  @override
-  void rejectGesture(int pointer) => stopTrackingPointer(pointer);
-
-  @override
-  void didStopTrackingLastPointer(int pointer) {}
-
-  @override
-  String get debugDescription => 'selection drag hold';
 }

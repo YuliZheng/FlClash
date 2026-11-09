@@ -120,20 +120,32 @@ final class HelperClient {
         : 'http://$localhost:${_readHelperPort()}';
   }
 
-  /// Helpers installed before the port was published listen on [helperPort].
+  /// The Windows Helper publishes its port only while it runs; without it the
+  /// fixed [helperPort] may belong to any local process, so nothing is sent.
   static int _readHelperPort() {
     if (!Platform.isWindows) {
       return helperPort;
     }
+    final port = _readPublishedPort();
+    if (port == null || port <= 0) {
+      throw const HelperException(
+        code: 'transportError',
+        message: 'Helper has not published its port',
+      );
+    }
+    return port;
+  }
+
+  static int? _readPublishedPort() {
     try {
       final key = LOCAL_MACHINE.open(helperPortKey);
       try {
-        return key.getInt(helperPortValue) ?? helperPort;
+        return key.getInt(helperPortValue);
       } finally {
         key.close();
       }
     } catch (_) {
-      return helperPort;
+      return null;
     }
   }
 

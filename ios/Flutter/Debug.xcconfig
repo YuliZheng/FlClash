@@ -1,0 +1,4 @@
+#include "Generated.xcconfig"
+
+APP_BUNDLE_ID = cc.chenx.flclash
+#include? "GeneratedBundleConfig.xcconfig"

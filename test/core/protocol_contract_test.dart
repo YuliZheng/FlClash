@@ -38,19 +38,14 @@ class _RecordingCoreHandler extends CoreHandlerInterface {
       CoreMethod.initClash => true as T,
       CoreMethod.getTraffic ||
       CoreMethod.getTotalTraffic => {'up': 12, 'down': 34},
+      CoreMethod.getNodeTraffic => [
+        {'name': 'node', 'provider': 'provider', 'up': 12, 'down': 34},
+        {'name': 'node', 'provider': 'other', 'up': 56, 'down': 78},
+      ],
       CoreMethod.asyncTestDelay => {
         'name': 'DIRECT',
         'url': 'https://example.com',
         'value': 42,
-      },
-      CoreMethod.probe => {
-        'status-code': 204,
-        'delay': 17,
-        'body': '',
-        'url': 'https://example.com/',
-        'chains': ['DIRECT'],
-        'rule': 'Match',
-        'rule-payload': '',
       },
       CoreMethod.getConnections => {
         'connections': [
@@ -82,51 +77,120 @@ class _RecordingCoreHandler extends CoreHandlerInterface {
         'vehicle-type': 'HTTP',
         'update-at': '2024-01-01T00:00:00.000Z',
       },
-      CoreMethod.getConfig => {
+      CoreMethod.getOverlayNetworkStatus => [
+        {
+          'name': 'tailnet',
+          'kind': 'tailscale',
+          'state': 'connected',
+          'raw-state': 'Running',
+          'network-name': 'example.com',
+          'details': {
+            'magic-dns-suffix': 'example.com',
+            'auth-key-configured': true,
+            'health': <String>[],
+            'nodes': [
+              {
+                'id': 'node-1',
+                'public-key': 'nodekey:test',
+                'hostname': 'device',
+                'dns-name': 'device.example.com.',
+                'os': 'windows',
+                'ips': ['100.64.0.1'],
+                'endpoints': ['192.0.2.1:41641'],
+                'online': true,
+                'active': true,
+                'self': true,
+                'exit-node': false,
+                'exit-node-option': false,
+                'expired': false,
+              },
+            ],
+          },
+        },
+        {
+          'name': 'zerotier',
+          'kind': 'zerotier',
+          'state': 'connected',
+          'raw-state': 'ok',
+          'network-name': 'example',
+          'details': {
+            'network-id': '8056c2e21c000001',
+            'node': 'abcdef1234',
+            'online': true,
+            'addresses': ['10.0.0.2/24'],
+            'routes': ['10.0.0.0/24'],
+            'dns': ['10.0.0.1:53'],
+            'mtu': 2800,
+            'peers': [
+              {
+                'address': '1234567890',
+                'role': 'leaf',
+                'version': '1.14.2',
+                'direct': true,
+                'endpoints': ['192.0.2.1:9993'],
+                'latency-ms': 12,
+              },
+            ],
+          },
+        },
+      ],
+      CoreMethod.activateOverlayNetwork => {
+        'name': 'tailnet',
+        'kind': 'tailscale',
+        'state': 'connected',
+        'raw-state': 'Running',
+        'network-name': 'example.com',
+      },
+      CoreMethod.pingTailscaleNode => {'latency-ms': 23},
+      CoreMethod.logoutTailscale => true,
+      CoreMethod.getProfileConfig => {
         'mode': 'rule',
         'rule': ['MATCH,DIRECT'],
       },
-      CoreMethod.getProfileOutbounds => {
-        'proxies': [
-          {'name': 'a', 'type': 'ss'},
-        ],
-        'proxy-groups': <Object>[],
+      CoreMethod.generateAgeKeyPair => {
+        'secret-key': 'AGE-SECRET-KEY-1',
+        'public-key': 'age1public',
       },
-      CoreMethod.getProxyDefinition when arguments == 'a' => {
-        'name': 'a',
-        'type': 'ss',
-        'plugin-opts': {'mode': 'websocket'},
+      CoreMethod.convertAgeSecretKeyToPublicKey => 'age1public',
+      CoreMethod.decryptAgeConfig => 'mode: rule',
+      CoreMethod.getMemory => {
+        'sys': 4096,
+        'heapObjects': 1024,
+        'heapUnused': 256,
+        'heapIdle': 128,
+        'stacks': 256,
+        'metadata': 128,
+        'gc': 128,
+        'other': 128,
+        'heapReleased': 2048,
       },
-      CoreMethod.getProxyDefinition => null,
-      CoreMethod.buildProfile => '/home/responses/1.yaml',
-      CoreMethod.getProfileBase => {
-        'config': {'mode': 'rule', 'rule': null},
-        'digest': 'abc',
-        'match-rules': ['MATCH,DIRECT'],
-        'proxies': 2,
-        'proxy-groups': 1,
-        'rules': 3,
+      CoreMethod.getGoroutineCount => 42,
+      CoreMethod.getCoreVersion => 'v1.19.31',
+      CoreMethod.queryRule => {
+        'target': 'example.com',
+        'port': 443,
+        'network': 'tcp',
+        'mode': 'rule',
+        'rule': 'DomainSuffix',
+        'rulePayload': 'example.com',
+        'proxy': 'DIRECT',
+        'ip': '',
+        'delay': 0,
       },
-      CoreMethod.getMemoryStats => {
-        'rss': 2048,
-        'heapInuse': 1024,
-        'heapIdle': 256,
-        'stackInuse': 64,
-        'runtimeOther': 32,
-      },
-      CoreMethod.changeProxy => {'message': '', 'changed': true},
-      CoreMethod.compileRuleSet => {'behavior': 'ipcidr', 'format': 'text'},
-      CoreMethod.getConnectionCount => 3,
-      CoreMethod.validateFilters => ['', 'missing closing )'],
-      CoreMethod.watchRoute => {'core-epoch': 1, 'route-version': 0},
-      CoreMethod.checkRoutes => {
-        'core-epoch': 1,
-        'route-version': 3,
-        'held': [true, false],
+      CoreMethod.clearDnsCache => true,
+      CoreMethod.queryDns => {
+        'domain': 'example.com',
+        'type': 'AAAA',
+        'initiator': 'manual',
+        'upstream': 'udp://1.1.1.1:53',
+        'answers': ['2606:2800:220:1::248'],
+        'rcode': 'NOERROR',
+        'delay': 8,
+        'time': '2026-10-06T00:00:00.000Z',
       },
       _ => '',
     };
-    return result as T?;
+    return result as T;
   }
 }
 
@@ -137,7 +201,7 @@ class _FailingConfigCoreHandler extends _RecordingCoreHandler {
     Object? arguments,
     Duration? timeout,
   }) async {
-    if (method == CoreMethod.getConfig) {
+    if (method == CoreMethod.getProfileConfig) {
       throw const CoreMethodException(
         code: 'core_error',
         message: 'config not found',
@@ -159,7 +223,7 @@ class _EmptyConfigCoreHandler extends _RecordingCoreHandler {
     Object? arguments,
     Duration? timeout,
   }) async {
-    if (method == CoreMethod.getConfig) {
+    if (method == CoreMethod.getProfileConfig) {
       return null;
     }
     return super.invokeMethod(
@@ -171,6 +235,16 @@ class _EmptyConfigCoreHandler extends _RecordingCoreHandler {
 }
 
 void main() {
+  test('configuration fields match the shared Go contract', () async {
+    final fixture =
+        jsonDecode(await File('test/fixtures/config_patch.json').readAsString())
+            as Map<String, dynamic>;
+    final params = UpdateParams.fromJson(fixture);
+    final encoded = jsonDecode(jsonEncode(params));
+
+    expect(encoded, fixture);
+  });
+
   test('method call keeps structured arguments', () async {
     final fixture =
         json.decode(
@@ -195,48 +269,16 @@ void main() {
     await handler.setupConfig(
       const SetupParams(selectedMap: {'GLOBAL': 'DIRECT'}, testUrl: 'test'),
     );
-    final switched = await handler.changeProxy(
+    await handler.changeProxy(
       const ChangeProxyParams(groupName: 'GLOBAL', proxyName: 'DIRECT'),
+      closeConnections: true,
     );
-    expect(switched, const ChangeProxyResult(changed: true));
-    final route = await handler.watchRoute(true);
-    expect(route, const RouteSnapshot(coreEpoch: 1));
-    expect(handler.calls[CoreMethod.watchRoute], isTrue);
-    final check = await handler.checkRoutes(
-      const CheckRoutesParams(
-        routes: [
-          [RouteHit(host: 'example.com:443', proxy: 'DIRECT', exit: 'x')],
-          [],
-        ],
-      ),
-    );
-    expect(
-      check,
-      const RouteCheck(coreEpoch: 1, routeVersion: 3, held: [true, false]),
-    );
-    expect(jsonDecode(jsonEncode(handler.calls[CoreMethod.checkRoutes])), {
-      'routes': [
-        [
-          {'host': 'example.com:443', 'proxy': 'DIRECT', 'exit': 'x'},
-        ],
-        <Object?>[],
-      ],
-    });
     await handler.sideLoadExternalProvider(providerName: 'provider', data: 'x');
-    await handler.asyncTestDelay(
-      'https://example.com',
-      'DIRECT',
-      const Duration(seconds: 8),
-    );
-    await handler.probe(
-      const ProbeParams(
-        url: 'https://example.com',
-        proxyName: 'DIRECT',
-        timeout: 1000,
-        maxBody: 64,
-      ),
-    );
+    await handler.asyncTestDelay('https://example.com', 'DIRECT');
     await handler.clearEffect(42);
+    await handler.validateConfig('mode: rule');
+    await handler.decryptAgeConfig('encrypted', 'AGE-SECRET-KEY-1');
+    await handler.convertAgeSecretKeyToPublicKey('AGE-SECRET-KEY-1');
 
     for (final method in [
       CoreMethod.initClash,
@@ -244,68 +286,25 @@ void main() {
       CoreMethod.changeProxy,
       CoreMethod.sideLoadExternalProvider,
       CoreMethod.asyncTestDelay,
-      CoreMethod.probe,
     ]) {
       expect(handler.calls[method], isA<Map>());
     }
-    expect(handler.calls[CoreMethod.probe], {
-      'url': 'https://example.com',
-      'proxy-name': 'DIRECT',
-      'headers': <String, String>{},
-      'timeout': 1000,
-      'max-body': 64,
-    });
     expect(handler.calls[CoreMethod.clearEffect], 42);
-  });
-
-  test('validateFilters sends the filters and reads one error each', () async {
-    final handler = _RecordingCoreHandler();
-
-    final errors = await handler.validateFilters(['hk`jp', '(hk']);
-
-    expect(handler.calls[CoreMethod.validateFilters], ['hk`jp', '(hk']);
-    expect(errors, ['', 'missing closing )']);
-  });
-
-  test('dumpRuleSet sends the rule set path', () async {
-    final handler = _RecordingCoreHandler();
-
-    await handler.dumpRuleSet('/rules.mrs');
-
-    expect(handler.calls[CoreMethod.dumpRuleSet], '/rules.mrs');
-  });
-
-  test('decryptConfig sends the path and the age key', () async {
-    final handler = _RecordingCoreHandler();
-
-    await handler.decryptConfig('/profile.yaml', 'AGE-SECRET-KEY-1A');
-
-    expect(handler.calls[CoreMethod.decryptConfig], {
-      'path': '/profile.yaml',
-      'age-secret-key': 'AGE-SECRET-KEY-1A',
+    expect(handler.calls[CoreMethod.validateConfig], 'mode: rule');
+    expect(handler.calls[CoreMethod.changeProxy], {
+      'group-name': 'GLOBAL',
+      'proxy-name': 'DIRECT',
+      'close-connections': true,
     });
+    expect(handler.calls[CoreMethod.decryptAgeConfig], {
+      'data': 'encrypted',
+      'age-secret-key': 'AGE-SECRET-KEY-1',
+    });
+    expect(
+      handler.calls[CoreMethod.convertAgeSecretKeyToPublicKey],
+      'AGE-SECRET-KEY-1',
+    );
   });
-
-  test(
-    'compileRuleSet names a cached file and reads what the Core found',
-    () async {
-      final handler = _RecordingCoreHandler();
-
-      final info = await handler.compileRuleSet(
-        'abc',
-        url: 'https://example.com/r.list',
-      );
-
-      expect(handler.calls[CoreMethod.compileRuleSet], {
-        'name': 'abc',
-        'url': 'https://example.com/r.list',
-      });
-      expect(info, (
-        behavior: RuleProviderBehavior.ipcidr,
-        format: RuleProviderFormat.text,
-      ));
-    },
-  );
 
   test('event contract accepts batches and legacy single events', () async {
     final fixture =
@@ -324,60 +323,6 @@ void main() {
 
     final legacy = coreEventsFromData({'type': 'loaded', 'data': 'provider-b'});
     expect(legacy.single.data, 'provider-b');
-  });
-
-  test('event contract decodes the dns query the Core sends', () {
-    final events = coreEventsFromData([
-      {
-        'type': 'dns',
-        'data': {
-          'domain': 'www.example.com',
-          'type': 'A',
-          'initiator': 'app',
-          'answers': ['93.184.216.34'],
-          'rcode': 'NOERROR',
-          'delay': 0,
-          'time': '2026-09-18T12:30:01.123456789+08:00',
-        },
-      },
-      {
-        'type': 'dns',
-        'data': {
-          'domain': 'missing.test',
-          'type': 'AAAA',
-          'initiator': 'unknown-initiator',
-          'upstream': 'tls://1.1.1.1:853',
-          'cached': true,
-          'answers': <String>[],
-          'error': 'i/o timeout',
-          'delay': 5000,
-          'time': '2026-09-18T04:30:02Z',
-        },
-      },
-    ]);
-
-    expect(events.map((event) => event.type), [
-      CoreEventType.dns,
-      CoreEventType.dns,
-    ]);
-    final queries = [
-      for (final event in events)
-        DnsQuery.fromJson(Map<String, Object?>.from(event.data as Map)),
-    ];
-    expect(queries.first.initiator, DnsQueryInitiator.app);
-    expect(queries.first.upstream, isEmpty);
-    expect(queries.first.cached, isFalse);
-    expect(queries.first.answers, ['93.184.216.34']);
-    expect(
-      queries.first.time.toUtc(),
-      DateTime.utc(2026, 9, 18, 4, 30, 1, 123, 456),
-    );
-    expect(queries.first.isFailed, isFalse);
-    expect(queries.last.initiator, isNull);
-    expect(queries.last.upstream, 'tls://1.1.1.1:853');
-    expect(queries.last.cached, isTrue);
-    expect(queries.last.rcode, isEmpty);
-    expect(queries.last.isFailed, isTrue);
   });
 
   test('event contract skips malformed entries without dropping the batch', () {
@@ -399,115 +344,171 @@ void main() {
       const Traffic(up: 12, down: 34),
     );
     expect(
-      await handler.asyncTestDelay(
-        'https://example.com',
-        'DIRECT',
-        const Duration(seconds: 8),
-      ),
+      await handler.asyncTestDelay('https://example.com', 'DIRECT'),
       const Delay(name: 'DIRECT', url: 'https://example.com', value: 42),
     );
-    expect(
-      await handler.probe(
-        const ProbeParams(url: 'https://example.com', timeout: 1000),
-      ),
-      const ProbeResult(
-        statusCode: 204,
-        delay: 17,
-        url: 'https://example.com/',
-        chains: ['DIRECT'],
-        rule: 'Match',
-      ),
-    );
+    expect(await handler.getNodeTraffic(), const [
+      NodeTraffic(name: 'node', provider: 'provider', up: 12, down: 34),
+      NodeTraffic(name: 'node', provider: 'other', up: 56, down: 78),
+    ]);
+    expect(handler.calls, containsPair(CoreMethod.getNodeTraffic, null));
     expect((await handler.getConnections()).single.id, 'connection-1');
-    expect(await handler.getConnectionCount(), 3);
     expect((await handler.getExternalProviders()).single.name, 'provider-1');
     expect(
       (await handler.getExternalProvider('provider-1'))?.name,
       'provider-1',
     );
-    expect(await handler.getConfig('/config.yaml'), {
+    final overlayStatuses = await handler.getOverlayNetworkStatus(
+      const GetOverlayNetworkStatusParams(
+        targets: [
+          OverlayNetworkTarget(
+            name: 'tailnet',
+            kind: OverlayNetworkKind.tailscale,
+            level: OverlayNetworkDetailLevel.details,
+          ),
+          OverlayNetworkTarget(
+            name: 'zerotier',
+            kind: OverlayNetworkKind.zerotier,
+            level: OverlayNetworkDetailLevel.details,
+          ),
+        ],
+      ),
+    );
+    expect(overlayStatuses.first.state, OverlayNetworkState.connected);
+    expect(
+      overlayStatuses.first.tailscaleDetails?.magicDnsSuffix,
+      'example.com',
+    );
+    expect(overlayStatuses.first.tailscaleDetails?.nodes.single.ips, [
+      '100.64.0.1',
+    ]);
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.hostName,
+      'device',
+    );
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.dnsName,
+      'device.example.com.',
+    );
+    expect(
+      overlayStatuses.first.tailscaleDetails?.nodes.single.publicKey,
+      'nodekey:test',
+    );
+    expect(overlayStatuses.first.tailscaleDetails?.nodes.single.endpoints, [
+      '192.0.2.1:41641',
+    ]);
+    expect(overlayStatuses.last.zeroTierDetails?.peers.single.latencyMs, 12);
+    expect(handler.calls[CoreMethod.getOverlayNetworkStatus], {
+      'targets': [
+        {'name': 'tailnet', 'kind': 'tailscale', 'level': 'details'},
+        {'name': 'zerotier', 'kind': 'zerotier', 'level': 'details'},
+      ],
+    });
+    final activated = await handler.activateOverlayNetwork(
+      'tailnet',
+      OverlayNetworkKind.tailscale,
+    );
+    expect(activated.state, OverlayNetworkState.connected);
+    expect(handler.calls[CoreMethod.activateOverlayNetwork], {
+      'name': 'tailnet',
+      'kind': 'tailscale',
+    });
+    expect(
+      (await handler.pingTailscaleNode('tailnet', '100.64.0.1')).latencyMs,
+      23,
+    );
+    expect(handler.calls[CoreMethod.pingTailscaleNode], {
+      'name': 'tailnet',
+      'ip': '100.64.0.1',
+    });
+    expect(await handler.logoutTailscale('tailnet'), isTrue);
+    expect(handler.calls[CoreMethod.logoutTailscale], {'name': 'tailnet'});
+    expect(await handler.getProfileConfig(42), {
       'mode': 'rule',
       'rule': ['MATCH,DIRECT'],
     });
-    final memory = await handler.getMemoryStats();
-    expect(memory?.rss, 2048);
-    expect(memory?.runtimeTotal, 1024 + 256 + 64 + 32);
-  });
-
-  test('getProfileBase sends the path and reads what the Core kept', () async {
-    final handler = _RecordingCoreHandler();
-
-    final base = await handler.getProfileBase('/profiles/1.yaml');
-
-    expect(handler.calls[CoreMethod.getProfileBase], '/profiles/1.yaml');
+    expect(await handler.generateAgeKeyPair(), {
+      'secret-key': 'AGE-SECRET-KEY-1',
+      'public-key': 'age1public',
+    });
     expect(
-      base,
-      const ProfileBase(
-        config: {'mode': 'rule', 'rule': null},
-        digest: 'abc',
-        matchRules: ['MATCH,DIRECT'],
-        proxies: 2,
-        proxyGroups: 1,
-        rules: 3,
+      await handler.convertAgeSecretKeyToPublicKey('AGE-SECRET-KEY-1'),
+      'age1public',
+    );
+    expect(
+      await handler.decryptAgeConfig('encrypted', 'AGE-SECRET-KEY-1'),
+      'mode: rule',
+    );
+    final memory = await handler.getMemory();
+    expect(memory.total, 2048);
+    expect(memory.sys, 4096);
+    expect(memory.heapObjects, 1024);
+    expect(memory.heapUnused, 256);
+    expect(memory.heapIdle, 128);
+    expect(memory.stacks, 256);
+    expect(memory.metadata, 128);
+    expect(memory.gc, 128);
+    expect(memory.other, 128);
+    expect(memory.heapReleased, 2048);
+    expect(await handler.getGoroutineCount(), 42);
+    expect(await handler.getCoreVersion(), 'v1.19.31');
+    final dnsQuery = await handler.queryDns('example.com', 'AAAA');
+    expect(handler.calls[CoreMethod.queryDns], {
+      'domain': 'example.com',
+      'type': 'AAAA',
+    });
+    expect(dnsQuery.initiator, DnsQueryInitiator.manual);
+    expect(dnsQuery.answers, ['2606:2800:220:1::248']);
+    expect(await handler.clearDnsCache(), isTrue);
+    expect(handler.calls, contains(CoreMethod.clearDnsCache));
+    final ruleQuery = await handler.queryRule(
+      const RuleQueryParams(target: 'example.com'),
+    );
+    expect(handler.calls[CoreMethod.queryRule], {
+      'target': 'example.com',
+      'port': 443,
+      'network': 'tcp',
+    });
+    expect(ruleQuery.rule, 'DomainSuffix');
+    expect(ruleQuery.proxy, 'DIRECT');
+    expect(ruleQuery.mode, Mode.rule);
+    await handler.queryRule(
+      const RuleQueryParams(
+        target: 'example.com',
+        sourceIP: '192.0.2.2',
+        sourcePort: 12345,
+        destinationIP: '192.0.2.1',
+        process: 'browser',
+        processPath: '/usr/bin/browser',
+        uid: 123,
+        inboundName: 'mixed-in',
+        inboundUser: 'alice',
+        sniffHost: 'sniff.example',
+        dscp: 63,
       ),
     );
-  });
-
-  test('the outbounds and the built profile cross as plain JSON', () async {
-    final handler = _RecordingCoreHandler();
-    const base = SetupBase(path: '/profiles/1.yaml', overlay: 'mode: rule');
-
-    final outbounds = await handler.getProfileOutbounds('/profiles/1.yaml');
-    final built = await handler.buildProfile(base);
-
-    expect(handler.calls[CoreMethod.getProfileOutbounds], '/profiles/1.yaml');
-    expect(outbounds['proxies'], [
-      {'name': 'a', 'type': 'ss'},
-    ]);
-    expect(handler.calls[CoreMethod.buildProfile], base.toJson());
-    expect(built, '/home/responses/1.yaml');
-  });
-
-  test('a proxy definition crosses as a nested mapping or null', () async {
-    final handler = _RecordingCoreHandler();
-
-    final definition = await handler.getProxyDefinition('a');
-    final missing = await handler.getProxyDefinition('from-provider');
-
-    expect(handler.calls[CoreMethod.getProxyDefinition], 'from-provider');
-    expect(definition, {
-      'name': 'a',
-      'type': 'ss',
-      'plugin-opts': {'mode': 'websocket'},
-    });
-    expect(missing, isNull);
-  });
-
-  test('setupConfig names a base only when the Core applies one', () async {
-    final handler = _RecordingCoreHandler();
-    const params = SetupParams(selectedMap: {}, testUrl: 'test');
-    Object? sent() =>
-        json.decode(json.encode(handler.calls[CoreMethod.setupConfig]));
-
-    await handler.setupConfig(params);
-    expect(sent(), isNot(contains('base')));
-
-    await handler.setupConfig(
-      params.copyWith(
-        base: const SetupBase(path: '/profiles/1.yaml', overlay: 'mode: rule'),
-      ),
-    );
-    expect((sent()! as Map)['base'], {
-      'path': '/profiles/1.yaml',
-      'overlay': 'mode: rule',
+    expect(handler.calls[CoreMethod.queryRule], {
+      'target': 'example.com',
+      'port': 443,
+      'network': 'tcp',
+      'sourceIP': '192.0.2.2',
+      'sourcePort': 12345,
+      'destinationIP': '192.0.2.1',
+      'process': 'browser',
+      'processPath': '/usr/bin/browser',
+      'uid': 123,
+      'inboundName': 'mixed-in',
+      'inboundUser': 'alice',
+      'sniffHost': 'sniff.example',
+      'dscp': 63,
     });
   });
 
-  test('getConfig preserves structured core errors', () async {
+  test('getProfileConfig preserves structured core errors', () async {
     final handler = _FailingConfigCoreHandler();
 
     await expectLater(
-      handler.getConfig('/missing.yaml'),
+      handler.getProfileConfig(42),
       throwsA(
         isA<CoreMethodException>()
             .having((error) => error.code, 'code', 'core_error')
@@ -518,11 +519,11 @@ void main() {
     );
   });
 
-  test('getConfig rejects empty transport results', () async {
+  test('getProfileConfig rejects empty transport results', () async {
     final handler = _EmptyConfigCoreHandler();
 
     await expectLater(
-      handler.getConfig('/config.yaml'),
+      handler.getProfileConfig(42),
       throwsA(
         isA<CoreMethodException>().having(
           (error) => error.code,
@@ -548,9 +549,6 @@ void main() {
     final failure = CoreMethodResponse.fromJson(
       Map<String, Object?>.from(fixture['errorResponse'] as Map),
     );
-    final spilled = CoreMethodResponse.fromJson(
-      Map<String, Object?>.from(fixture['spilledResponse'] as Map),
-    );
 
     expect(success.unwrap<String>(), '');
     expect(success.toJson(), containsPair('result', ''));
@@ -567,9 +565,5 @@ void main() {
     );
     expect(failure.toJson(), contains('error'));
     expect(failure.toJson(), isNot(contains('code')));
-    expect(failure.file, isNull);
-    expect(failure.toJson(), isNot(contains('file')));
-    expect(spilled.file, '/home/responses/1234.json');
-    expect(spilled.toJson(), containsPair('file', '/home/responses/1234.json'));
   });
 }

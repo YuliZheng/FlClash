@@ -1,79 +1,58 @@
-import 'package:fl_clash/common/constant.dart';
-import 'package:fl_clash/common/exception.dart';
-import 'package:fl_clash/common/network_error.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:fl_clash/core/desktop/launch_policy.dart';
 import 'package:fl_clash/core/method.dart';
 import 'package:fl_clash/l10n/l10n.dart';
-import 'package:fl_clash/ui/l10n.dart';
-import 'package:flutter/widgets.dart';
+
+import 'dart:ui';
 
 final currentAppLocalizations = AppLocalizations.current;
 
-class AppUiLocalizations implements UiLocalizations {
-  const AppUiLocalizations(this._localizations);
-
-  static const LocalizationsDelegate<UiLocalizations> delegate =
-      _AppUiLocalizationsDelegate();
-
-  final AppLocalizations _localizations;
-
-  @override
-  String get back => _localizations.back;
-
-  @override
-  String get cancel => _localizations.cancel;
-
-  @override
-  String get clearSearch => _localizations.clearSearch;
-
-  @override
-  String get close => _localizations.close;
-
-  @override
-  String get hidePassword => _localizations.hidePassword;
-
-  @override
-  String get more => _localizations.more;
-
-  @override
-  String get noSearchResults => _localizations.noSearchResults;
-
-  @override
-  String get reset => _localizations.reset;
-
-  @override
-  String get search => _localizations.search;
-
-  @override
-  String get showLess => _localizations.showLess;
-
-  @override
-  String get showMore => _localizations.showMore;
-
-  @override
-  String get showPassword => _localizations.showPassword;
-
-  @override
-  String get sort => _localizations.sort;
-
-  @override
-  String get submit => _localizations.submit;
+String? networkErrorMessage(Object error, AppLocalizations appLocalizations) {
+  if (error case CoreMethodException(:final code, :final message)) {
+    final summary = switch (code) {
+      'request_bad_response' => appLocalizations.networkException,
+      'request_error' => appLocalizations.unknownNetworkError,
+      _ => null,
+    };
+    return summary == null ? null : _withNetworkDetail(summary, message);
+  }
+  if (error is DioException) {
+    if (error.type == DioExceptionType.badResponse) {
+      final response = error.response;
+      final statusCode = response?.statusCode;
+      final summary = statusCode == null
+          ? appLocalizations.networkException
+          : '${appLocalizations.networkException} [$statusCode]';
+      final data = response?.data;
+      final String body;
+      if (data is Uint8List) {
+        try {
+          body = utf8.decode(data);
+        } on FormatException {
+          return summary;
+        }
+      } else if (data is Map || data is List) {
+        body = jsonEncode(data);
+      } else {
+        body = data?.toString() ?? '';
+      }
+      return _withNetworkDetail(summary, body);
+    }
+    final detail = error.error?.toString().trim();
+    return _withNetworkDetail(
+      appLocalizations.unknownNetworkError,
+      detail?.isNotEmpty == true ? detail : error.message,
+    );
+  }
+  return null;
 }
 
-class _AppUiLocalizationsDelegate
-    extends LocalizationsDelegate<UiLocalizations> {
-  const _AppUiLocalizationsDelegate();
-
-  @override
-  bool isSupported(Locale locale) =>
-      AppLocalizations.delegate.isSupported(locale);
-
-  @override
-  Future<UiLocalizations> load(Locale locale) =>
-      AppLocalizations.load(locale).then(AppUiLocalizations.new);
-
-  @override
-  bool shouldReload(_AppUiLocalizationsDelegate old) => false;
+String _withNetworkDetail(String summary, String? detail) {
+  final text = detail?.trim() ?? '';
+  return text.isEmpty ? summary : '$summary\n$text';
 }
 
 String? coreLaunchBlockedMessage(
@@ -94,23 +73,9 @@ String userFacingErrorMessage(Object error, AppLocalizations appLocalizations) {
   return networkErrorMessage(error, appLocalizations) ??
       coreLaunchBlockedMessage(error, appLocalizations) ??
       switch (error) {
-        AgeSecretKeyRequiredException() =>
-          appLocalizations.ageSecretKeyRequiredTip,
-        CoreMethodException(code: 'rule_set_empty') =>
-          appLocalizations.ruleSetEmptyTip,
-        CoreMethodException(code: 'rule_set_mixed') =>
-          appLocalizations.ruleSetMixedTip,
-        CoreMethodException(code: 'rule_set_invalid') =>
-          appLocalizations.ruleSetInvalidTip,
         CoreMethodException(:final message) => message,
         _ => error.toString(),
       };
-}
-
-String delayFailureText(int delay, AppLocalizations appLocalizations) {
-  return delay == delayTimedOutValue
-      ? appLocalizations.timeout
-      : appLocalizations.delayFailed;
 }
 
 Locale? getLocaleForString(String? localString) {

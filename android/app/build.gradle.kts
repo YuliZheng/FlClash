@@ -6,8 +6,6 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Kept out of local.properties: the Flutter tool rewrites that file during a
-// build and would drop the signing entries.
 val signingProperties = Properties().apply {
     val signingPropertiesFile = rootProject.file("dev-signing.properties")
     if (signingPropertiesFile.exists()) {
@@ -25,8 +23,9 @@ val hasReleaseSigning = releaseStoreFile.exists() &&
     releaseKeyPassword != null
 
 android {
-    namespace = "com.follow.clash"
+    namespace = "cc.chenx.flclash"
     compileSdk = libs.versions.compileSdk.get().toInt()
+    compileSdkMinor = libs.versions.compileSdkMinor.get().toInt()
     ndkVersion = libs.versions.ndkVersion.get()
 
     compileOptions {
@@ -35,7 +34,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.follow.clash"
+        applicationId = "com.follow.clash.dev"
         minSdk = flutter.minSdkVersion
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = flutter.versionCode
@@ -68,14 +67,11 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = if (hasReleaseSigning) {
-                signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                signingConfig = signingConfigs.getByName("debug")
             }
-            // This fork exists to sit beside the official app, so the release
-            // build keeps the .dev package even when a release key is present.
-            applicationIdSuffix = ".dev"
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -11,6 +11,7 @@ final class FakeDesktopCoreTransport implements DesktopCoreTransport {
   final String address;
 
   final List<String> sentMessages = [];
+  Completer<void>? sendGate;
   Object? sendError;
   final StreamController<DesktopTransportEvent> _eventController =
       StreamController<DesktopTransportEvent>.broadcast();
@@ -127,15 +128,16 @@ final class FakeDesktopCoreTransport implements DesktopCoreTransport {
   }
 
   @override
-  void send(List<int> frame) {
+  Future<void> send(String message) async {
     if (state == DesktopTransportState.closed) {
       throw StateError('IPC transport is closed');
     }
+    await sendGate?.future;
     final error = sendError;
     if (error != null) {
       Error.throwWithStackTrace(error, StackTrace.current);
     }
-    sentMessages.add(utf8.decode(frame));
+    sentMessages.add(message);
   }
 
   @override

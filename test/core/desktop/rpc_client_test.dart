@@ -1,16 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:fl_clash/core/desktop/rpc_client.dart';
 import 'package:fl_clash/core/event.dart';
 import 'package:fl_clash/core/method.dart';
-import 'package:fl_clash/core/spill.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:path/path.dart';
 
-import '../../helpers/app_paths.dart';
 import 'fakes.dart';
 
 Future<Map<String, Object?>> _sentRequest(
@@ -21,31 +17,49 @@ Future<Map<String, Object?>> _sentRequest(
 }
 
 void main() {
-  test('reads a response the Core spilled to a file', () async {
-    final home = Directory.systemTemp.createTempSync('rpc_spill');
-    addTearDown(() => home.deleteSync(recursive: true));
-    await useAppPaths(home);
+  test('decodes a large node response in the background', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<Map<String, dynamic>>(
-      method: CoreMethod.getConfig,
+    addTearDown(transport.close);
+    addTearDown(client.close);
+    final nodes = List.generate(2000, (i) => {'name': 'node-$i', 'type': 'ss'});
+    final invocation = client.invoke<List<dynamic>>(
+      method: CoreMethod.getProxies,
     );
     final request = await _sentRequest(transport);
-    final file = File(join(home.path, coreSpillDirectoryName, '1.json'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync(
-        jsonEncode({
-          'id': request['id'],
-          'result': {'mode': 'rule'},
-        }),
-      );
 
-    transport.addJson({'id': request['id'], 'result': null, 'file': file.path});
+    transport.addJson({'id': request['id'], 'result': nodes});
 
-    expect(await invocation, {'mode': 'rule'});
-    expect(file.existsSync(), isFalse);
-    await client.close();
-    await transport.close();
+    expect(await invocation, nodes);
+  });
+
+  test('small responses cannot overtake a background decode', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    addTearDown(transport.close);
+    addTearDown(client.close);
+    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final request = await _sentRequest(transport);
+    transport.addJson({
+      'id': request['id'],
+      'result': true,
+      'padding': 'x' * 51200,
+    });
+    transport.addJson({'id': request['id'], 'result': false});
+    expect(await invocation, isTrue);
+  });
+
+  test('a malformed large frame does not block subsequent responses', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    addTearDown(transport.close);
+    addTearDown(client.close);
+    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final request = await _sentRequest(transport);
+    transport.addFrame(Uint8List.fromList(utf8.encode('x' * 51200)));
+    transport.addJson({'id': request['id'], 'result': true});
+
+    expect(await invocation, isTrue);
   });
 
   test('correlates a response and ignores a late duplicate', () async {
@@ -303,27 +317,47 @@ void main() {
     await transport.close();
   });
 
-  test('close fails pending requests and is idempotent', () async {
+  test('close cancels pending requests without an exception', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
     final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
     await _sentRequest(transport);
 
-    final failure = expectLater(
-      invocation,
-      throwsA(
-        isA<CoreMethodException>().having(
-          (error) => error.code,
-          'code',
-          'transport_disconnected',
-        ),
-      ),
-    );
     await client.close();
     await client.close();
 
-    await failure;
+    expect(await invocation, isNull);
     expect(client.pendingCount, 0);
+    await transport.close();
+  });
+
+  test('shutdown ignores new requests without sending them', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+
+    client.beginShutdown();
+
+    expect(await client.invoke<bool>(method: CoreMethod.getIsInit), isNull);
+    expect(transport.sentMessages, isEmpty);
+    await client.close();
+    await transport.close();
+  });
+
+  test('shutdown suppresses a send failure already in flight', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final sendGate = Completer<void>();
+    transport.sendGate = sendGate;
+    final client = CoreRpcClient(transport);
+    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    await pumpEventQueue();
+
+    client.beginShutdown();
+    transport.sendError = StateError('pipe is closing');
+    sendGate.complete();
+
+    expect(await invocation, isNull);
+    expect(client.pendingCount, 0);
+    await client.close();
     await transport.close();
   });
 

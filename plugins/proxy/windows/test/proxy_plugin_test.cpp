@@ -97,6 +97,38 @@ TEST(ProxyPlugin, StartProxyRejectsNonStringBypassDomain) {
   EXPECT_EQ(error_code, "bad_args");
 }
 
+TEST(ProxyPlugin, ConditionalStopSucceedsWithoutApplyingAProxy) {
+  ProxyPlugin plugin;
+  bool succeeded = false;
+  EncodableMap arguments = {
+      {EncodableValue("onlyIfNeeded"), EncodableValue(true)}};
+  plugin.HandleMethodCall(
+      MethodCall("StopProxy", std::make_unique<EncodableValue>(arguments)),
+      std::make_unique<MethodResultFunctions<>>(
+          [&succeeded](const EncodableValue* value) {
+            succeeded = value != nullptr && std::get<bool>(*value);
+          },
+          nullptr, nullptr));
+
+  EXPECT_TRUE(succeeded);
+}
+
+TEST(ProxyPlugin, StopProxyRejectsInvalidConditionalFlag) {
+  ProxyPlugin plugin;
+  std::string error_code;
+  EncodableMap arguments = {
+      {EncodableValue("onlyIfNeeded"), EncodableValue("true")}};
+  plugin.HandleMethodCall(
+      MethodCall("StopProxy", std::make_unique<EncodableValue>(arguments)),
+      std::make_unique<MethodResultFunctions<>>(
+          nullptr,
+          [&error_code](const std::string& code, const std::string&,
+                        const EncodableValue*) { error_code = code; },
+          nullptr));
+
+  EXPECT_EQ(error_code, "bad_args");
+}
+
 TEST(ProxyPlugin, RestoresTheSystemProxyOnlyWhenTheSessionReallyEnds) {
   EXPECT_TRUE(ProxyPlugin::IsSessionEnding(WM_ENDSESSION, TRUE));
   // A cancelled shutdown reports itself through the same message, and acting on

@@ -35,6 +35,8 @@ void main() {
     required Architecture architecture,
     bool codeAssets = true,
     Uri? compiler,
+    int ndkApi = 23,
+    IOSSdk iosSdk = IOSSdk.iPhoneOS,
     Directory? package,
     Map<String, Object?> userDefines = const {},
   }) {
@@ -65,14 +67,19 @@ void main() {
                 archiver: compiler.resolve('llvm-ar'),
                 linker: compiler.resolve('ld.lld'),
               ),
-        android: os == OS.android ? AndroidCodeConfig(targetNdkApi: 23) : null,
+        iOS: os == OS.iOS
+            ? IOSCodeConfig(targetSdk: iosSdk, targetVersion: 15)
+            : null,
+        android: os == OS.android
+            ? AndroidCodeConfig(targetNdkApi: ndkApi)
+            : null,
       ).setupBuildInput(builder);
     }
     return builder.build();
   }
 
   group('requestFor', () {
-    test('has nothing to build without code assets or on iOS', () {
+    test('has nothing to build without code assets', () {
       const builder = CoreBuilder();
 
       expect(
@@ -86,10 +93,25 @@ void main() {
         isNull,
       );
       expect(
-        builder.requestFor(
-          buildInput(os: OS.iOS, architecture: Architecture.arm64),
+        builder
+            .requestFor(
+              buildInput(os: OS.iOS, architecture: Architecture.arm64),
+            )
+            ?.target,
+        Target.iosArm64,
+      );
+    });
+
+    test('rejects simulator builds instead of staging device archives', () {
+      expect(
+        () => const CoreBuilder().requestFor(
+          buildInput(
+            os: OS.iOS,
+            architecture: Architecture.arm64,
+            iosSdk: IOSSdk.iPhoneSimulator,
+          ),
         ),
-        isNull,
+        throwsA(isA<BuildException>()),
       );
     });
 
@@ -101,16 +123,32 @@ void main() {
       expect(request.rootDir, repository.path);
       expect(request.harnessDir, p.join(packageRoot.path, 'setup_hooks'));
       expect(request.target, Target.linuxAmd64);
+      expect(request.androidToolchain, isNull);
     });
 
-    test('skips the macOS slice the host does not run', () {
-      const builder = CoreBuilder(hostArchitecture: Architecture.arm64);
+    test('reads GOAMD64 from the setup user define', () {
+      final request = const CoreBuilder().requestFor(
+        buildInput(
+          os: OS.linux,
+          architecture: Architecture.x64,
+          userDefines: {'goamd64': 'v3'},
+        ),
+      )!;
+
+      expect(request.target.goamd64, 'v3');
+      expect(request.target.goarch, 'amd64');
+    });
+
+    test('builds the requested macOS architecture regardless of host', () {
+      const builder = CoreBuilder();
 
       expect(
-        builder.requestFor(
-          buildInput(os: OS.macOS, architecture: Architecture.x64),
-        ),
-        isNull,
+        builder
+            .requestFor(
+              buildInput(os: OS.macOS, architecture: Architecture.x64),
+            )!
+            .target,
+        Target.macosAmd64,
       );
       expect(
         builder
@@ -122,18 +160,33 @@ void main() {
       );
     });
 
-    test('leaves Android to the :core Gradle module', () {
+    test('derives the Android compiler from the NDK clang Flutter passes', () {
       final bin = p.join(repository.path, 'ndk', 'prebuilt', 'host', 'bin');
-
-      expect(
-        const CoreBuilder().requestFor(
-          buildInput(
-            os: OS.android,
-            architecture: Architecture.arm64,
-            compiler: Uri.file(p.join(bin, 'clang')),
-          ),
+      final request = const CoreBuilder().requestFor(
+        buildInput(
+          os: OS.android,
+          architecture: Architecture.arm64,
+          compiler: Uri.file(p.join(bin, 'clang')),
+          ndkApi: 23,
         ),
-        isNull,
+      )!;
+
+      expect(request.target, Target.androidArm64);
+      expect(
+        request.androidToolchain!.clangFor(Target.androidArm64),
+        p.join(
+          bin,
+          'aarch64-linux-android23-clang${Platform.isWindows ? '.cmd' : ''}',
+        ),
+      );
+    });
+
+    test('fails when Flutter passes no Android compiler', () {
+      expect(
+        () => const CoreBuilder().requestFor(
+          buildInput(os: OS.android, architecture: Architecture.arm64),
+        ),
+        throwsA(isA<InfraError>()),
       );
     });
 
@@ -210,7 +263,11 @@ void main() {
       final output = BuildOutputBuilder();
 
       await builder.run(
-        input: buildInput(os: OS.iOS, architecture: Architecture.arm64),
+        input: buildInput(
+          os: OS.iOS,
+          architecture: Architecture.arm64,
+          codeAssets: false,
+        ),
         output: output,
       );
 

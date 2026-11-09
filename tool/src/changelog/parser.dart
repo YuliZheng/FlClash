@@ -33,8 +33,9 @@ final _genericTrailerPattern = RegExp(
   caseSensitive: false,
 );
 
-/// The only suffixed trailer. The changelog ships English, and anything else
-/// belongs in a post-processing step, not in the commit message.
+/// The only suffixed trailer left. Translations were removed on purpose: the
+/// changelog ships English, and anything else belongs in a post-processing
+/// step, not in the commit message.
 const _knownSuffixedTrailer = 'Changelog-Type';
 
 /// The parser is pure: it never touches git or the filesystem, so every rule
@@ -126,7 +127,7 @@ class ChangelogParser {
   }
 
   /// The trailer wins over the subject, but only when it carries text: an
-  /// empty `Changelog:` falls back to the subject.
+  /// empty `Changelog:` used to blank the entry out instead of falling back.
   String _text(String? trailer, String description) =>
       trailer == null || trailer.isEmpty ? _capitalize(description) : trailer;
 

@@ -45,10 +45,6 @@ class CodeForge extends StatefulWidget {
   /// The controller for managing undo/redo operations.
   final UndoRedoController? undoController;
 
-  /// Scrolls the text vertically, read once as the editor mounts; the host
-  /// owns it. An internal one is created when null.
-  final ScrollController? verticalScrollController;
-
   /// The syntax highlighting theme as a map of token types to [TextStyle].
   final Map<String, TextStyle> editorTheme;
 
@@ -72,6 +68,7 @@ class CodeForge extends StatefulWidget {
   ///
   /// When true, the user cannot modify the text content.
   final bool readOnly;
+  final bool? isMobile;
 
   /// Whether to wrap long lines.
   ///
@@ -141,10 +138,10 @@ class CodeForge extends StatefulWidget {
     required this.suggestionPopupBuilder,
     this.undoController,
     this.findController,
-    this.verticalScrollController,
     this.textStyle,
     this.innerPadding,
     this.readOnly = false,
+    this.isMobile,
     this.lineWrap = false,
     this.lineNumberStyle,
     this.tabSize,
@@ -242,6 +239,7 @@ class _CodeField extends LeafRenderObjectWidget {
 }
 
 class CodeForgeContextMenuRequest {
+  final bool isMobile;
   final Offset globalPosition;
   final bool hasSelection;
 
@@ -261,6 +259,7 @@ class CodeForgeContextMenuRequest {
   final VoidCallback selectAll;
 
   const CodeForgeContextMenuRequest({
+    this.isMobile = false,
     required this.globalPosition,
     required this.hasSelection,
     this.selectionRect,

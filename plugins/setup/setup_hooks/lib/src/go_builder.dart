@@ -4,13 +4,79 @@ import 'dart:io';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
+import 'build.dart';
 import 'build_cache.dart';
+import 'error.dart';
 import 'fingerprint.dart';
 import 'options.dart';
 import 'target.dart';
 import 'util.dart';
 
 final _log = Logger('go_builder');
+
+const _mihomoVersionSymbol = 'github.com/metacubex/mihomo/constant.Version';
+
+String _resolveGoLdflags(
+  Target target,
+  BuildConfig config, {
+  String? mihomoVersion,
+}) {
+  final flags = [
+    config.goLdflags,
+    if (mihomoVersion != null) '-X $_mihomoVersionSymbol=$mihomoVersion',
+    if (target.goos == 'android' && target.isLib)
+      '-extldflags -Wl,-z,max-page-size=16384',
+  ];
+  return flags.join(' ');
+}
+
+/// Upstream tags only: the fork's own `flclash/*` and `Prerelease-*` tags
+/// would otherwise win and hide which upstream release the core is based on.
+String? _resolveMihomoVersion(String mihomoPath) {
+  try {
+    final result = Process.runSync('git', [
+      'describe',
+      '--tags',
+      '--abbrev=0',
+      '--match',
+      'v[0-9]*',
+    ], workingDirectory: mihomoPath);
+    final version = (result.stdout as String).trim();
+    if (result.exitCode != 0 || version.isEmpty) {
+      _log.warning('Cannot describe mihomo version: ${result.stderr}');
+      return null;
+    }
+    return version;
+  } on ProcessException catch (error) {
+    _log.warning('Cannot describe mihomo version: $error');
+    return null;
+  }
+}
+
+String _resolveIosSdkPath() {
+  final result = Process.runSync('xcrun', [
+    '--sdk',
+    'iphoneos',
+    '--show-sdk-path',
+  ]);
+  if (result.exitCode != 0) {
+    throw BuildException('Failed to locate iOS SDK: ${result.stderr}');
+  }
+  return (result.stdout as String).trim();
+}
+
+String resolveIosCgoFlags({
+  required String sdkPath,
+  required String arch,
+  String baseFlags = '',
+}) => [
+  baseFlags.trim(),
+  '-isysroot',
+  sdkPath,
+  '-miphoneos-version-min=14.0',
+  '-arch',
+  arch,
+].where((value) => value.isNotEmpty).join(' ');
 
 class GoBuilder {
   GoBuilder({
@@ -19,6 +85,7 @@ class GoBuilder {
     required this.cache,
     required this.notice,
     this.harnessInputs = const [],
+    this.androidToolchain,
   });
 
   final String rootDir;
@@ -26,27 +93,65 @@ class GoBuilder {
   final BuildCache cache;
   final BuildNotice notice;
   final List<String> harnessInputs;
-
-  static const _mainPackage = './cmd/core';
+  final AndroidToolchain? androidToolchain;
 
   String get _corePath => p.join(rootDir, config.coreDir);
   String get _outputPath => p.join(rootDir, config.outputDir);
+  late final String? _mihomoVersion = _resolveMihomoVersion(
+    p.join(_corePath, 'mihomo'),
+  );
+
+  String _resolveCc(Target target) {
+    if (target.goos == 'ios') {
+      return (runCommand('xcrun', [
+                '--sdk',
+                'iphoneos',
+                '--find',
+                'clang',
+              ]).stdout
+              as String)
+          .trim();
+    }
+    final toolchain = androidToolchain;
+    if (toolchain == null) {
+      throw BuildException('Android target $target needs an NDK toolchain');
+    }
+    final cc = toolchain.clangFor(target);
+    if (!File(cc).existsSync()) {
+      throw BuildException(
+        'NDK compiler not found: $cc (API ${toolchain.apiLevel} from the '
+        'app minSdk; the NDK Flutter selected may be too old)',
+      );
+    }
+    return cc;
+  }
 
   Future<BuildExecution> build(Target target) async {
-    final outDir = p.join(_outputPath, target.platformDir);
+    final outDir = target.isLib
+        ? p.join(_outputPath, target.platformDir, target.abi!)
+        : p.join(_outputPath, target.platformDir);
     ensureDir(outDir);
 
-    final fileName = '${config.coreName}${target.executableExtension}';
+    final fileName = target.isLib
+        ? '${config.libName}${target.lowMemory ? '_lowmem' : ''}'
+              '${target.dynamicLibExtension}'
+        : '${config.coreName}${target.executableExtension}';
     final outFile = p.join(outDir, fileName);
 
+    final microarch = target.goamd64 == null ? '' : '-${target.goamd64}';
+    final variantKey = target.lowMemory ? '-lowmem' : '';
     return cache.run(
-      key: '${target.platformDir}-${target.goarch}-core',
+      key: '${target.platformDir}-${target.goarch}$microarch$variantKey-core',
       fingerprint: () => _calculateFingerprint(target),
       primaryOutput: outFile,
       notice: notice,
       build: () async {
         final env = _buildEnvironment(target);
-        _log.info('Building Go core: $target');
+        final buildMode = _buildMode(target);
+        _log.info(
+          'Building Go core: $target '
+          '(${buildMode == null ? 'standalone' : 'CGO, $buildMode'})',
+        );
 
         // A failed build must not destroy the previous artifacts.
         final stagingDir = Directory(
@@ -60,10 +165,30 @@ class GoBuilder {
             workingDirectory: _corePath,
             environment: env,
           );
-          replaceFile(staged, outFile);
+
+          final outputs = <String>[outFile];
+          if (target.goos == 'android') {
+            outputs.addAll(
+              _installAndroidOutput(
+                abi: target.abi!,
+                platformDir: p.join(_outputPath, target.platformDir),
+                stagingDir: stagingDir.path,
+                libName: fileName,
+                outFile: outFile,
+              ),
+            );
+          } else {
+            replaceFile(staged, outFile);
+            if (target.goos == 'ios') {
+              final headerName = '${p.basenameWithoutExtension(fileName)}.h';
+              final header = p.join(outDir, headerName);
+              replaceFile(p.join(stagingDir.path, headerName), header);
+              outputs.add(header);
+            }
+          }
 
           _log.info('Built: $outFile');
-          return [outFile];
+          return outputs;
         } finally {
           if (stagingDir.existsSync()) {
             stagingDir.deleteSync(recursive: true);
@@ -73,36 +198,74 @@ class GoBuilder {
     );
   }
 
-  Map<String, String> _buildEnvironment(Target target) => {
-    'GOOS': target.goos,
-    'GOARCH': target.goarch,
-    'CGO_ENABLED': '0',
-  };
+  Map<String, String> _buildEnvironment(Target target) {
+    final env = <String, String>{
+      'GOOS': target.goos,
+      'GOARCH': target.goarch,
+      if (target.goarch == 'amd64') 'GOAMD64': target.goamd64 ?? 'v1',
+    };
+    if (target.isLib) {
+      env
+        ..['CGO_ENABLED'] = '1'
+        ..['CC'] = _resolveCc(target)
+        ..['CGO_CFLAGS'] = '-O3 -Werror';
+      if (target.goos == 'ios') {
+        final sdkPath = _resolveIosSdkPath();
+        env
+          ..['CGO_CFLAGS'] = resolveIosCgoFlags(
+            sdkPath: sdkPath,
+            arch: target.goarch,
+            baseFlags: env['CGO_CFLAGS'] ?? '',
+          )
+          ..['CGO_LDFLAGS'] = resolveIosCgoFlags(
+            sdkPath: sdkPath,
+            arch: target.goarch,
+          );
+      }
+    } else {
+      env['CGO_ENABLED'] = '0';
+    }
+    return env;
+  }
 
-  // Package-level vars in mihomo copy constant.Version during init, so only the
-  // linker can set it for every reader.
-  static const _versionSymbol = 'github.com/metacubex/mihomo/constant.Version';
+  List<String> _buildArguments(Target target, {String? outFile}) {
+    final buildMode = _buildMode(target);
+    return [
+      'build',
+      '-ldflags=${_resolveGoLdflags(target, config, mihomoVersion: _mihomoVersion)}',
+      '-tags=${_buildTags(target)}',
+      if (buildMode != null) '-buildmode=$buildMode',
+      if (outFile != null) ...['-o', outFile],
+    ];
+  }
 
-  String _ldflags() => [
-    config.goLdflags,
-    if (config.coreVersion.isNotEmpty)
-      '-X $_versionSymbol=${config.coreVersion}',
-  ].join(' ');
+  String? _buildMode(Target target) {
+    if (!target.isLib) return null;
+    switch (target.goos) {
+      case 'android':
+        return 'c-shared';
+      case 'ios':
+        return 'c-archive';
+      default:
+        throw BuildException('Unsupported library target: ${target.goos}');
+    }
+  }
 
-  List<String> _buildArguments(Target target, {String? outFile}) => [
-    'build',
-    '-ldflags=${_ldflags()}',
-    '-tags=${config.tags}',
-    if (outFile != null) ...['-o', outFile],
-    _mainPackage,
-  ];
+  String _buildTags(Target target) =>
+      target.lowMemory ? '${config.tags} with_low_memory' : config.tags;
 
   Future<Fingerprint> _calculateFingerprint(Target target) async {
     final env = _buildEnvironment(target);
     final builder = FingerprintBuilder(rootDir: rootDir)
       ..addValue('cache_schema', BuildCache.schemaVersion)
       ..addValue('kind', 'go-core')
-      ..addValue('target', {'goos': target.goos, 'goarch': target.goarch})
+      ..addValue('target', {
+        'goos': target.goos,
+        'goarch': target.goarch,
+        'abi': target.abi,
+        'is_lib': target.isLib,
+        'low_memory': target.lowMemory,
+      })
       ..addValue('config', config.toFingerprintMap())
       ..addValue('environment', env)
       ..addValue('arguments', _buildArguments(target));
@@ -134,7 +297,7 @@ class GoBuilder {
     final goEnv = jsonDecode((goEnvResult.stdout as String).trim());
     builder.addValue('go_env', goEnv);
 
-    final inputs = _resolveGoInputs(env);
+    final inputs = _resolveGoInputs(env, target);
     final goWork = (goEnv as Map<String, dynamic>)['GOWORK'];
     if (goWork is String && goWork.isNotEmpty && goWork != 'off') {
       inputs.add(goWork);
@@ -143,16 +306,25 @@ class GoBuilder {
     }
     inputs.addAll(harnessInputs);
 
+    if (target.isLib) {
+      final compilerVersion = runCommand(env['CC']!, ['--version']);
+      builder.addValue(
+        target.goos == 'ios' ? 'ios_compiler' : 'android_compiler',
+        '${(compilerVersion.stdout as String).trim()}\n'
+        '${(compilerVersion.stderr as String).trim()}',
+      );
+    }
+
     builder.addFiles(inputs);
     return builder.finishWithInputs();
   }
 
-  Set<String> _resolveGoInputs(Map<String, String> environment) {
+  Set<String> _resolveGoInputs(Map<String, String> environment, Target target) {
     const template =
         r'''{{range .GoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .CFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .CXXFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .MFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .HFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .FFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .SFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .SwigFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .SwigCXXFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .SysoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .EmbedFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{with .Module}}{{if .GoMod}}{{.GoMod}}{{"\n"}}{{end}}{{end}}''';
     final result = runCommand(
       'go',
-      ['list', '-deps', '-tags=${config.tags}', '-f', template, _mainPackage],
+      ['list', '-deps', '-tags=${_buildTags(target)}', '-f', template, '.'],
       workingDirectory: _corePath,
       environment: environment,
     );
@@ -180,5 +352,62 @@ class GoBuilder {
       if (File(filePath).existsSync()) inputs.add(filePath);
     }
     return inputs;
+  }
+
+  List<String> _installAndroidOutput({
+    required String abi,
+    required String platformDir,
+    required String stagingDir,
+    required String libName,
+    required String outFile,
+  }) {
+    final includesPath = p.join(platformDir, 'includes', abi);
+    final androidCoreMainPath = p.join(
+      rootDir,
+      'android',
+      'core',
+      'src',
+      'main',
+    );
+    final jniLibsPath = p.join(androidCoreMainPath, 'jniLibs', abi);
+    final cppIncludesPath = p.join(androidCoreMainPath, 'cpp', 'includes', abi);
+    final outputs = <String>[];
+
+    ensureDir(includesPath);
+    _clearDirectory(includesPath);
+    ensureDir(cppIncludesPath);
+    _clearDirectory(cppIncludesPath);
+
+    replaceFile(p.join(stagingDir, libName), outFile);
+    copyFile(outFile, p.join(jniLibsPath, libName));
+    outputs.add(p.join(jniLibsPath, libName));
+
+    final generatedHeaders = Directory(stagingDir).listSync();
+    final staticHeaders = Directory(_corePath).listSync();
+    for (final file in [...generatedHeaders, ...staticHeaders]) {
+      if (!file.path.endsWith('.h')) continue;
+      final headerName = p.basename(file.path);
+      final includePath = p.join(includesPath, headerName);
+      final cppIncludePath = p.join(cppIncludesPath, headerName);
+      copyFile(file.path, includePath);
+      copyFile(file.path, cppIncludePath);
+      outputs
+        ..add(includePath)
+        ..add(cppIncludePath);
+    }
+    return outputs;
+  }
+
+  void _clearDirectory(String dirPath) {
+    final dir = Directory(dirPath);
+    if (!dir.existsSync()) return;
+
+    for (final entity in dir.listSync()) {
+      if (entity is File || entity is Link) {
+        entity.deleteSync();
+      } else if (entity is Directory) {
+        entity.deleteSync(recursive: true);
+      }
+    }
   }
 }

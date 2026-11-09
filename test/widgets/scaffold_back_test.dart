@@ -1,22 +1,20 @@
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/views/dashboard/widget_registry.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/views/access.dart';
 import 'package:fl_clash/views/dashboard/dashboard.dart';
-import 'package:fl_clash/views/dashboard/edit.dart';
 import 'package:fl_clash/views/logs.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:flutter/services.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:riverpod_annotation/riverpod_annotation.dart' show Override;
-
-import '../helpers/glyph_finders.dart';
-import '../helpers/test_app.dart';
 
 void main() {
   testWidgets('back layers are consumed from inner to outer', (tester) async {
@@ -28,7 +26,6 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        builder: (context, child) => wrapAppScopes(context, child!),
         home: CommonPopScope(
           onPop: (_) {
             rootBackCount++;
@@ -44,6 +41,7 @@ void main() {
                     setState(() {
                       innerActive = false;
                     });
+                    return false;
                   },
                   child: child,
                 );
@@ -55,6 +53,7 @@ void main() {
                     setState(() {
                       outerActive = false;
                     });
+                    return false;
                   },
                   child: child,
                 );
@@ -91,7 +90,6 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          builder: (context, child) => wrapAppScopes(context, child!),
           home: CommonPopScope(
             onPop: (_) {
               rootBackCount++;
@@ -102,6 +100,7 @@ void main() {
               child: BackLayerScope(
                 onBack: () {
                   backCount++;
+                  return false;
                 },
                 schedulePostFrameCallback: pendingCallbacks.add,
                 child: const SizedBox(),
@@ -150,7 +149,6 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        builder: (context, child) => wrapAppScopes(context, child!),
         home: ValueListenableBuilder(
           valueListenable: showLayer,
           builder: (_, value, _) {
@@ -160,6 +158,7 @@ void main() {
             return BackLayerScope(
               onBack: () {
                 backCount++;
+                return false;
               },
               child: const SizedBox(),
             );
@@ -187,10 +186,8 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          builder: (context, child) => wrapAppScopes(context, child!),
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
@@ -209,7 +206,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byGlyph(AppGlyphs.search));
+    await tester.tap(find.byIcon(Symbols.search));
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
 
@@ -218,6 +215,47 @@ void main() {
 
     expect(find.byType(TextField), findsNothing);
     expect(rootBackCount, 0);
+  });
+
+  testWidgets('regex search toggles and marks invalid expressions', (
+    tester,
+  ) async {
+    bool? useRegex;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.delegate.supportedLocales,
+        home: CommonScaffold(
+          title: 'Search',
+          searchState: AppBarSearchState(
+            onSearch: (_) {},
+            onRegexChange: (value) => useRegex = value,
+          ),
+          body: const SizedBox(),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Symbols.search));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Regex search'));
+    await tester.pumpAndSettle();
+
+    expect(useRegex, isTrue);
+    expect(
+      tester.widget<Icon>(find.byIcon(Symbols.regular_expression)).fill,
+      1,
+    );
+
+    await tester.enterText(find.byType(TextField), '[');
+    await tester.pump();
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    final context = tester.element(find.byType(TextField));
+    expect(textField.style?.color, Theme.of(context).colorScheme.error);
   });
 
   testWidgets('inactive page scope exits the kept search layer', (
@@ -233,10 +271,8 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          builder: (context, child) => wrapAppScopes(context, child!),
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
@@ -248,7 +284,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byGlyph(AppGlyphs.search));
+    await tester.tap(find.byIcon(Symbols.search));
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
 
@@ -261,9 +297,10 @@ void main() {
   testWidgets('inactive page scope exits dashboard edit layer', (tester) async {
     final container = ProviderContainer(
       overrides: [
-        _phoneView(tester),
         dashboardStateProvider.overrideWithValue(
-          const DashboardState(dashboardWidgets: []),
+          const DashboardState(
+            dashboardWidgets: [DashboardWidget.networkSpeed],
+          ),
         ),
       ],
     );
@@ -278,23 +315,37 @@ void main() {
         child: _DashboardTestApp(
           child: _PageActivityTestScope(
             isActive: isActive,
-            child: const DashboardView(platform: SupportPlatform.Android),
+            child: const DashboardView(),
           ),
         ),
       ),
     );
     await tester.pump();
 
-    await tester.tap(find.byTooltip('Edit dashboard'));
+    await tester.tap(find.byKey(const ValueKey('edit-icon')));
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.byType(DashboardEditor), findsOneWidget);
+    expect(find.byKey(const ValueKey('save-icon')), findsOneWidget);
+
+    final grid = tester.state<SuperGridState>(find.byType(SuperGrid));
+    final card = tester.widget<OutlinedButton>(
+      find
+          .descendant(
+            of: find.byType(SuperGrid),
+            matching: find.byType(OutlinedButton),
+          )
+          .first,
+    );
+    card.focusNode!.requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(grid.isHolding, isTrue);
 
     isActive.value = false;
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.byType(DashboardEditor), findsNothing);
-    expect(find.byTooltip('Edit dashboard'), findsOneWidget);
+    expect(find.byKey(const ValueKey('edit-icon')), findsOneWidget);
   });
 
   testWidgets('inactive page scope exits access search layer', (tester) async {
@@ -317,7 +368,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 301));
 
-    await tester.tap(find.byGlyph(AppGlyphs.search));
+    await tester.tap(find.byTooltip('Search'));
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
 
@@ -327,12 +378,11 @@ void main() {
     expect(find.byType(TextField), findsNothing);
   });
 
-  testWidgets('done and system back cannot re-enter dashboard edit mode', (
+  testWidgets('save and system back cannot re-enter dashboard edit mode', (
     tester,
   ) async {
     final container = ProviderContainer(
       overrides: [
-        _phoneView(tester),
         dashboardStateProvider.overrideWithValue(
           const DashboardState(dashboardWidgets: []),
         ),
@@ -349,27 +399,27 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.byTooltip('Edit dashboard'));
+    await tester.tap(find.byKey(const ValueKey('edit-icon')));
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.byType(DashboardEditor), findsOneWidget);
+    expect(find.byKey(const ValueKey('save-icon')), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Done'));
+    tester.widget<IconButton>(find.byKey(const ValueKey(true))).onPressed!();
     await tester.binding.handlePopRoute();
     await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.byType(DashboardEditor), findsNothing);
-    expect(find.byTooltip('Edit dashboard'), findsOneWidget);
+    expect(find.byKey(const ValueKey('edit-icon')), findsOneWidget);
   });
 
-  testWidgets('system back keeps a card removed in edit mode', (tester) async {
+  testWidgets('system back preserves a pending dashboard deletion', (
+    tester,
+  ) async {
     final container = ProviderContainer(
       overrides: [
-        _phoneView(tester),
         dashboardStateProvider.overrideWithValue(
           const DashboardState(
             dashboardWidgets: [
               DashboardWidget.networkSpeed,
-              DashboardWidget.outboundMode,
+              DashboardWidget.outboundModeV2,
             ],
           ),
         ),
@@ -392,51 +442,149 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.byTooltip('Edit dashboard'));
+    await tester.tap(find.byKey(const ValueKey('edit-icon')));
     await tester.pump(const Duration(milliseconds: 500));
 
-    await tester.tap(find.byTooltip('Remove Network speed'));
+    final deleteButton = find.ancestor(
+      of: find.byIcon(Symbols.close).first,
+      matching: find.byType(IconButton),
+    );
+    tester.widget<IconButton>(deleteButton).onPressed!();
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 301));
+    await tester.pump();
+    expect(
+      tester.state<SuperGridState>(find.byType(SuperGrid)).snapshotChildren,
+      [DashboardWidget.outboundModeV2.widget],
+    );
     await tester.binding.handlePopRoute();
     await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.byType(DashboardEditor), findsNothing);
+    expect(find.byKey(const ValueKey('edit-icon')), findsOneWidget);
     expect(container.read(appSettingProvider).dashboardWidgets, [
-      DashboardWidget.outboundMode,
-      DashboardWidget.networkTakeover,
+      DashboardWidget.outboundModeV2,
     ]);
   });
-}
 
-const _phoneSize = Size(412, 915);
+  testWidgets('escape in edit mode leaves edit before the page', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        dashboardStateProvider.overrideWithValue(
+          const DashboardState(
+            dashboardWidgets: [
+              DashboardWidget.networkSpeed,
+              DashboardWidget.outboundModeV2,
+            ],
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    globalState.container = container;
 
-/// A phone's view, where the dashboard lays out the single column it edits.
-Override _phoneView(WidgetTester tester) {
-  tester.view.physicalSize = _phoneSize;
-  tester.view.devicePixelRatio = 1;
-  addTearDown(tester.view.resetPhysicalSize);
-  addTearDown(tester.view.resetDevicePixelRatio);
-  return viewSizeProvider.overrideWithBuild((_, _) => _phoneSize);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const _DashboardTestApp(),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('edit-icon')));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const ValueKey('save-icon')), findsOneWidget);
+
+    final grid = tester.state<SuperGridState>(find.byType(SuperGrid));
+    final card = tester.widget<OutlinedButton>(
+      find
+          .descendant(
+            of: find.byType(SuperGrid),
+            matching: find.byType(OutlinedButton),
+          )
+          .first,
+    );
+    card.focusNode!.requestFocus();
+    await tester.pump();
+    for (final key in [
+      LogicalKeyboardKey.escape,
+      LogicalKeyboardKey.goBack,
+      LogicalKeyboardKey.gameButtonB,
+    ]) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(grid.isHolding, isTrue);
+      await tester.sendKeyEvent(key, physicalKey: PhysicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(grid.isHolding, isFalse);
+      expect(find.byKey(const ValueKey('save-icon')), findsOneWidget);
+    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(grid.isHolding, isTrue);
+    await tester.binding.handlePopRoute();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(grid.isHolding, isFalse);
+    expect(find.byKey(const ValueKey('save-icon')), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.byKey(const ValueKey('edit-icon')), findsOneWidget);
+  });
+
+  testWidgets('a back layer stays armed when its callback retains it', (
+    tester,
+  ) async {
+    var backs = 0;
+    var retain = true;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BackLayerScope(
+          onBack: () {
+            backs++;
+            return retain;
+          },
+          child: const SizedBox(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(backs, 1);
+
+    retain = false;
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(backs, 2);
+
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(backs, 2);
+  });
 }
 
 class _DashboardTestApp extends StatelessWidget {
   final Widget child;
 
-  const _DashboardTestApp({
-    this.child = const DashboardView(platform: SupportPlatform.Android),
-  });
+  const _DashboardTestApp({this.child = const DashboardView()});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       localizationsDelegates: const [
         AppLocalizations.delegate,
-        AppUiLocalizations.delegate,
         ...GlobalMaterialLocalizations.delegates,
       ],
       supportedLocales: AppLocalizations.delegate.supportedLocales,
       builder: (context, child) {
-        return wrapAppScopes(context, child!);
+        globalState.measure = Measure.of(context, 1);
+        globalState.theme = CommonTheme.of(context, 1);
+        return child!;
       },
       home: child,
     );

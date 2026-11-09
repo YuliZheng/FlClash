@@ -30,22 +30,21 @@ void main() {
     }
   });
 
-  test('every Linux package names the GTK application id as its window '
-      'class', () {
-    final applicationId = RegExp(
-      r'set\(APPLICATION_ID "([^"]+)"\)',
-    ).firstMatch(File('linux/CMakeLists.txt').readAsStringSync())!.group(1);
+  test('Windows installer restores a Helper it removed for the upgrade', () {
+    final script = File(
+      'windows/packaging/exe/inno_setup.iss',
+    ).readAsStringSync();
 
-    for (final format in ['deb', 'rpm', 'appimage']) {
-      final config =
-          loadYaml(
-                File(
-                  'linux/packaging/$format/make_config.yaml',
-                ).readAsStringSync(),
-              )
-              as YamlMap;
-      expect(config['startup_wm_class'], applicationId, reason: format);
-    }
+    final registrationCheck = script.indexOf('RegKeyExists(');
+    final uninstall = script.indexOf("'uninstall'");
+    expect(registrationCheck, isNonNegative);
+    expect(registrationCheck, lessThan(uninstall));
+    expect(script, contains("'install'"));
+
+    final postInstall = script.substring(
+      script.indexOf('CurStep = ssPostInstall'),
+    );
+    expect(postInstall, contains('RestoreHelperService;'));
   });
 
   test('rpm keeps the Core bytes the Helper was built against', () {

@@ -8,8 +8,6 @@ import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/core.dart';
-import 'package:fl_clash/providers/database.dart';
-import 'package:fl_clash/providers/route_state.dart';
 import 'package:fl_clash/providers/state.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,7 +39,7 @@ class _CoreContainerState extends ConsumerState<CoreManager>
     // the previous one hides the error and looks like the switch was lost.
     ref.listenManual(currentProfileIdProvider, (prev, next) {
       if (prev == next) return;
-      runAfterFrame(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(ref.read(setupActionProvider.notifier).fullSetup());
       });
     });
@@ -50,50 +48,29 @@ class _CoreContainerState extends ConsumerState<CoreManager>
         ref.read(setupActionProvider.notifier).updateConfigDebounce();
       }
     });
-    ref.listenManual(setupPatchProvider, (prev, next) {
-      if (prev != next) {
-        ref
-            .read(setupActionProvider.notifier)
-            .applyProfileDebounce(
-              silence: true,
-              // The test URL changes no YAML, so only a forced apply hands
-              // it over.
-              force:
-                  prev != null &&
-                  prev.patchConfig.testUrl != next.patchConfig.testUrl,
-            );
-      }
+    ref.listenManual(profileReloadStateProvider, (prev, next) {
+      if (prev != next) _reloadProfile();
     });
-    ref.listenManual(globalRulesProvider, (prev, next) {
-      if (prev?.value != null && next.hasValue) {
-        ref.read(setupActionProvider.notifier).applyIfGlobalRulesUsed();
+    ref.listenManual(activeAddedRulesProvider, (prev, next) {
+      if (next.profileId == null ||
+          prev?.profileId != next.profileId ||
+          prev?.rules.value == null ||
+          next.rules.isLoading ||
+          next.rules.hasError ||
+          ruleListEquality.equals(prev?.rules.value, next.rules.value)) {
+        return;
       }
+      _reloadProfile();
     });
-    ref.listenManual(appSettingProvider.select((state) => state.openLogs), (
-      prev,
-      next,
-    ) {
-      if (prev != next) {
-        _syncLogStream();
-      }
-    });
-    // Every Core process starts without a log stream.
-    ref.listenManual(coreStatusProvider, (prev, next) {
-      if (next == CoreStatus.connected && prev != CoreStatus.connected) {
-        _syncLogStream();
-      }
-    }, fireImmediately: true);
   }
 
-  void _syncLogStream() {
-    if (ref.read(coreStatusProvider) != CoreStatus.connected) {
+  void _reloadProfile() {
+    if (!ref.read(initProvider) ||
+        ref.read(coreStatusProvider) != CoreStatus.connected ||
+        ref.read(currentProfileIdProvider) == null) {
       return;
     }
-    if (ref.read(appSettingProvider).openLogs) {
-      _core.startLog();
-    } else {
-      _core.stopLog();
-    }
+    ref.read(setupActionProvider.notifier).applyProfileDebounce(silence: true);
   }
 
   @override
@@ -127,36 +104,14 @@ class _CoreContainerState extends ConsumerState<CoreManager>
   }
 
   @override
-  void onDialerLoop(String proxyName) {
-    throttler.call(
-      FunctionTag.dialerLoopNotifier,
-      () => dialogs.showNotifier(
-        currentAppLocalizations.dialerProxyLoopStopped(proxyName),
-        level: MessageLevel.error,
-      ),
-      duration: const Duration(seconds: 3),
-      fire: true,
-    );
-    super.onDialerLoop(proxyName);
-  }
-
-  @override
   void onRequest(TrackerInfo trackerInfo) async {
     ref.read(requestsProvider.notifier).addRequest(trackerInfo);
-    ref.read(requestCountProvider.notifier).update((count) => count + 1);
     super.onRequest(trackerInfo);
-  }
-
-  @override
-  void onRequestTraffic(Map<String, RequestTraffic> traffic) {
-    ref.read(requestsProvider.notifier).updateTraffic(traffic);
-    super.onRequestTraffic(traffic);
   }
 
   @override
   void onDns(DnsQuery dnsQuery) {
     ref.read(dnsQueriesProvider.notifier).addQuery(dnsQuery);
-    ref.read(dnsQueryCountProvider.notifier).update((count) => count + 1);
     super.onDns(dnsQuery);
   }
 
@@ -194,11 +149,5 @@ class _CoreContainerState extends ConsumerState<CoreManager>
         .read(geoResourceActionProvider.notifier)
         .handleCoreUpdate(geoType, updating, skipped, error);
     super.onGeoUpdate(geoType, updating, skipped, error);
-  }
-
-  @override
-  void onRouteChanged(RouteSnapshot snapshot) {
-    ref.read(routeTrackerProvider.notifier).applySnapshot(snapshot);
-    super.onRouteChanged(snapshot);
   }
 }

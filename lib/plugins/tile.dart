@@ -9,6 +9,8 @@ abstract mixin class TileListener {
   void onStart() {}
 
   void onDetached() {}
+
+  void onRunningState(bool running, DateTime? startTime) {}
 }
 
 class Tile {
@@ -31,6 +33,16 @@ class Tile {
             break;
           case 'detached':
             listener.onDetached();
+            break;
+          case 'syncRunningState':
+            final arguments = call.arguments as Map;
+            final startTime = arguments['startTime'] as int;
+            listener.onRunningState(
+              arguments['running'] as bool,
+              startTime > 0
+                  ? DateTime.fromMillisecondsSinceEpoch(startTime)
+                  : null,
+            );
             break;
         }
       } catch (error) {
@@ -55,4 +67,4 @@ class Tile {
   }
 }
 
-final tile = system.isAndroid ? Tile.instance : null;
+final tile = system.isMobile ? Tile.instance : null;

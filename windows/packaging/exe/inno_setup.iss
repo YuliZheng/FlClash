@@ -13,12 +13,16 @@ OutputBaseFilename={{OUTPUT_BASE_FILENAME}}
 Compression=lzma
 SolidCompression=yes
 SetupIconFile={{SETUP_ICON_FILE}}
+UninstallDisplayIcon={app}\{{EXECUTABLE_NAME}}
 WizardStyle=modern
 PrivilegesRequired={{PRIVILEGES_REQUIRED}}
 ArchitecturesAllowed={{ARCH}}
 ArchitecturesInstallIn64BitMode={{ARCH}}
 
 [Code]
+var
+  HelperWasRegistered: Boolean;
+
 procedure KillProcesses;
 var
   Processes: TArrayOfString;
@@ -41,53 +45,94 @@ begin
   HelperPath := ExpandConstant('{app}\\FlClashHelperService.exe');
   if FileExists(HelperPath) then
   begin
+    if RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\FlClashHelperService') then
+    begin
+      HelperWasRegistered := True;
+    end;
     Exec(HelperPath, 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
-procedure ClearStaleProxy;
+// The app relaunches unelevated and cannot reinstall the service without a UAC
+// prompt, which a silent update's unattended relaunch may leave unanswered.
+procedure RestoreHelperService;
+var
+  ResultCode: Integer;
+begin
+  if HelperWasRegistered then
+  begin
+    Exec(ExpandConstant('{app}\\FlClashHelperService.exe'), 'install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+// The app's exit path is what normally turns the system proxy off, and
+// KillProcesses skips it. Only the uninstaller's copy is known to accept the
+// flag before installation; an older one would start the app instead.
+procedure ClearStaleProxy(AsOriginalUser: Boolean);
 var
   AppPath: String;
   ResultCode: Integer;
 begin
   AppPath := ExpandConstant('{app}\\{{EXECUTABLE_NAME}}');
-  if FileExists(AppPath) then
+  if not FileExists(AppPath) then
+  begin
+    Exit;
+  end;
+  if AsOriginalUser then
+  begin
+    ExecAsOriginalUser(AppPath, '--clear-stale-proxy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end
+  else
   begin
     Exec(AppPath, '--clear-stale-proxy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
-function PointsIntoApp(Value: String): Boolean;
+function IsAppUpdate: Boolean;
 begin
-  Result := Pos(Lowercase(AddBackslash(ExpandConstant('{app}'))), Lowercase(Value)) > 0;
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
 
-// The value name is appName and the schemes are protocolSchemes, both in
-// lib/common.
-procedure RemoveUserRegistrations;
+procedure SignalUpdateReady;
 var
-  Schemes: TArrayOfString;
-  Value: String;
+  ReadyFile: String;
+begin
+  ReadyFile := ExpandConstant('{param:UPDATEREADY|}');
+  if ReadyFile <> '' then
+  begin
+    SaveStringToFile(ReadyFile, '', False);
+  end;
+end;
+
+function IsAppRunning: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq FlClash.exe" /NH | find /I "FlClash.exe"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ResultCode = 0;
+end;
+
+procedure WaitForAppExit;
+var
   i: Integer;
 begin
-  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{{APP_NAME}}', Value) and PointsIntoApp(Value) then
+  for i := 1 to 50 do
   begin
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{{APP_NAME}}');
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', '{{APP_NAME}}');
-  end;
-
-  Schemes := ['clash', 'clashmeta', 'flclash'];
-  for i := 0 to GetArrayLength(Schemes)-1 do
-  begin
-    if RegQueryStringValue(HKCU, 'Software\Classes\' + Schemes[i] + '\shell\open\command', '', Value) and PointsIntoApp(Value) then
+    if not IsAppRunning then
     begin
-      RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\' + Schemes[i]);
+      Exit;
     end;
+    Sleep(200);
   end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if IsAppUpdate then
+  begin
+    SignalUpdateReady;
+    WaitForAppExit;
+  end;
   UnregisterHelperService;
   KillProcesses;
   Result := '';
@@ -97,73 +142,30 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    ClearStaleProxy;
+    RestoreHelperService;
+    ClearStaleProxy(True);
   end;
 end;
 
+// The uninstaller may run as another administrator, whose proxy settings are
+// not the user's; the run before the kill reaches the user's running app.
 function InitializeUninstall(): Boolean;
 begin
   UnregisterHelperService;
+  ClearStaleProxy(False);
   KillProcesses;
-  ClearStaleProxy;
+  ClearStaleProxy(False);
   Result := True;
-end;
-
-// path_provider names these folders after CompanyName and ProductName in
-// windows/runner/Runner.rc.
-procedure RemoveUserData;
-begin
-  DelTree(ExpandConstant('{userappdata}\com.follow\clash'), True, True, True);
-  DelTree(ExpandConstant('{localappdata}\com.follow\clash'), True, True, True);
-  RemoveDir(ExpandConstant('{userappdata}\com.follow'));
-  RemoveDir(ExpandConstant('{localappdata}\com.follow'));
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usPostUninstall then
-  begin
-    RemoveUserRegistrations;
-    if not UninstallSilent and (MsgBox(CustomMessage('RemoveUserData'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
-    begin
-      RemoveUserData;
-    end;
-  end;
 end;
 
 [Languages]
 {% for locale in LOCALES %}
 {% if locale.lang == 'en' %}Name: "english"; MessagesFile: "compiler:Default.isl"{% endif %}
-{% if locale.lang == 'hy' %}Name: "armenian"; MessagesFile: "compiler:Languages\\Armenian.isl"{% endif %}
-{% if locale.lang == 'bg' %}Name: "bulgarian"; MessagesFile: "compiler:Languages\\Bulgarian.isl"{% endif %}
-{% if locale.lang == 'ca' %}Name: "catalan"; MessagesFile: "compiler:Languages\\Catalan.isl"{% endif %}
-{% if locale.lang == 'zh' %}
-Name: "chineseSimplified"; MessagesFile: {% if locale.file %}{{ locale.file }}{% else %}"compiler:Languages\\ChineseSimplified.isl"{% endif %}
-{% endif %}
-{% if locale.lang == 'co' %}Name: "corsican"; MessagesFile: "compiler:Languages\\Corsican.isl"{% endif %}
-{% if locale.lang == 'cs' %}Name: "czech"; MessagesFile: "compiler:Languages\\Czech.isl"{% endif %}
-{% if locale.lang == 'da' %}Name: "danish"; MessagesFile: "compiler:Languages\\Danish.isl"{% endif %}
-{% if locale.lang == 'nl' %}Name: "dutch"; MessagesFile: "compiler:Languages\\Dutch.isl"{% endif %}
-{% if locale.lang == 'fi' %}Name: "finnish"; MessagesFile: "compiler:Languages\\Finnish.isl"{% endif %}
-{% if locale.lang == 'fr' %}Name: "french"; MessagesFile: "compiler:Languages\\French.isl"{% endif %}
-{% if locale.lang == 'de' %}Name: "german"; MessagesFile: "compiler:Languages\\German.isl"{% endif %}
-{% if locale.lang == 'he' %}Name: "hebrew"; MessagesFile: "compiler:Languages\\Hebrew.isl"{% endif %}
-{% if locale.lang == 'is' %}Name: "icelandic"; MessagesFile: "compiler:Languages\\Icelandic.isl"{% endif %}
-{% if locale.lang == 'it' %}Name: "italian"; MessagesFile: "compiler:Languages\\Italian.isl"{% endif %}
 {% if locale.lang == 'ja' %}Name: "japanese"; MessagesFile: "compiler:Languages\\Japanese.isl"{% endif %}
-{% if locale.lang == 'no' %}Name: "norwegian"; MessagesFile: "compiler:Languages\\Norwegian.isl"{% endif %}
-{% if locale.lang == 'pl' %}Name: "polish"; MessagesFile: "compiler:Languages\\Polish.isl"{% endif %}
-{% if locale.lang == 'pt' %}Name: "portuguese"; MessagesFile: "compiler:Languages\\Portuguese.isl"{% endif %}
 {% if locale.lang == 'ru' %}Name: "russian"; MessagesFile: "compiler:Languages\\Russian.isl"{% endif %}
-{% if locale.lang == 'sk' %}Name: "slovak"; MessagesFile: "compiler:Languages\\Slovak.isl"{% endif %}
-{% if locale.lang == 'sl' %}Name: "slovenian"; MessagesFile: "compiler:Languages\\Slovenian.isl"{% endif %}
-{% if locale.lang == 'es' %}Name: "spanish"; MessagesFile: "compiler:Languages\\Spanish.isl"{% endif %}
-{% if locale.lang == 'tr' %}Name: "turkish"; MessagesFile: "compiler:Languages\\Turkish.isl"{% endif %}
-{% if locale.lang == 'uk' %}Name: "ukrainian"; MessagesFile: "compiler:Languages\\Ukrainian.isl"{% endif %}
+{% if locale.lang == 'zh' %}Name: "chineseSimplified"; MessagesFile: "{{ locale.file }}"{% endif %}
+{% if locale.lang == 'zh_TW' %}Name: "chineseTraditional"; MessagesFile: "{{ locale.file }}"{% endif %}
 {% endfor %}
-
-[CustomMessages]
-english.RemoveUserData=Also delete your profiles and settings?
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: {% if CREATE_DESKTOP_ICON != true %}unchecked{% else %}checkedonce{% endif %}
@@ -176,3 +178,4 @@ Name: "{autoprograms}\\{{DISPLAY_NAME}}"; Filename: "{app}\\{{EXECUTABLE_NAME}}"
 Name: "{autodesktop}\\{{DISPLAY_NAME}}"; Filename: "{app}\\{{EXECUTABLE_NAME}}"; Tasks: desktopicon
 [Run]
 Filename: "{app}\\{{EXECUTABLE_NAME}}"; Description: "{cm:LaunchProgram,{{DISPLAY_NAME}}}"; Flags: {% if PRIVILEGES_REQUIRED == 'admin' %}runascurrentuser{% endif %} nowait postinstall skipifsilent
+Filename: "{app}\\{{EXECUTABLE_NAME}}"; Flags: runasoriginaluser nowait; Check: IsAppUpdate

@@ -12,16 +12,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../helpers/test_app.dart';
 
-const _labels = ShortcutLabels(isMacOS: false, isWindows: true);
-
-final _keyA = PhysicalKeyboardKey.keyA.usbHidUsage;
-final _keyB = PhysicalKeyboardKey.keyB.usbHidUsage;
-
 ProviderContainer _containerFor(
   WidgetTester tester, {
   List<HotKeyAction> hotKeyActions = const [],
 }) {
-  const size = Size(1400, 1400);
+  const size = Size(1400, 1000);
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -43,16 +38,6 @@ ProviderContainer _containerFor(
   return container;
 }
 
-Future<void> _pumpView(WidgetTester tester, ProviderContainer container) async {
-  await tester.pumpWidget(
-    UncontrolledProviderScope(
-      container: container,
-      child: const TestApp(child: HotKeyView()),
-    ),
-  );
-  await tester.pumpAndSettle();
-}
-
 Future<void> _pumpRecorder(
   WidgetTester tester,
   ProviderContainer container,
@@ -69,7 +54,10 @@ Future<void> _pumpRecorder(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => Scaffold(
-                  body: HotKeyRecorder(hotKeyAction: action, labels: _labels),
+                  body: HotKeyRecorder(
+                    hotKeyAction: action,
+                    labels: ShortcutLabels.host(),
+                  ),
                 ),
               ),
             ),
@@ -84,135 +72,75 @@ Future<void> _pumpRecorder(
   await tester.pumpAndSettle();
 }
 
-Future<void> _press(
+Future<void> _pressWithControl(
   WidgetTester tester,
   PhysicalKeyboardKey key,
-  LogicalKeyboardKey logicalKey, {
-  List<(PhysicalKeyboardKey, LogicalKeyboardKey)> holding = const [],
-}) async {
-  for (final (physical, logical) in holding) {
-    await simulateKeyDownEvent(logical, physicalKey: physical);
-  }
+  LogicalKeyboardKey logicalKey,
+) async {
+  await simulateKeyDownEvent(
+    LogicalKeyboardKey.controlLeft,
+    physicalKey: PhysicalKeyboardKey.controlLeft,
+  );
   await simulateKeyDownEvent(logicalKey, physicalKey: key);
   await tester.pumpAndSettle();
   await simulateKeyUpEvent(logicalKey, physicalKey: key);
-  for (final (physical, logical) in holding.reversed) {
-    await simulateKeyUpEvent(logical, physicalKey: physical);
-  }
-  await tester.pumpAndSettle();
-}
-
-const _control = (
-  PhysicalKeyboardKey.controlLeft,
-  LogicalKeyboardKey.controlLeft,
-);
-
-Future<void> _pressControlA(WidgetTester tester) {
-  return _press(
-    tester,
-    PhysicalKeyboardKey.keyA,
-    LogicalKeyboardKey.keyA,
-    holding: const [_control],
+  await simulateKeyUpEvent(
+    LogicalKeyboardKey.controlLeft,
+    physicalKey: PhysicalKeyboardKey.controlLeft,
   );
-}
-
-TextButton _button(WidgetTester tester, String label) {
-  return tester.widget<TextButton>(find.widgetWithText(TextButton, label));
 }
 
 void main() {
   group('HotKeyView', () {
-    testWidgets('lists every action, bound or not', (tester) async {
-      final container = _containerFor(
-        tester,
-        hotKeyActions: [
-          HotKeyAction(
-            action: HotAction.view,
-            key: _keyA,
-            modifiers: const {KeyboardModifier.control},
-          ),
-        ],
+    testWidgets('shows unset actions in sections', (tester) async {
+      final container = _containerFor(tester);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const TestApp(child: HotKeyView()),
+        ),
       );
-      await _pumpView(tester, container);
+      await tester.pumpAndSettle();
 
-      for (final action in HotAction.values) {
-        await tester.scrollUntilVisible(find.text(action.label), 100);
-        expect(find.text(action.label), findsOne, reason: action.name);
-      }
-      expect(
-        find.text(currentAppLocalizations.hotkeyNotSet),
-        findsAtLeastNWidgets(1),
-      );
+      expect(find.text('Rule mode'), findsOneWidget);
+      expect(find.text('Not set'), findsWidgets);
       expect(tester.takeException(), null);
     });
 
-    testWidgets('shows a binding as key caps and clears it in place', (
-      tester,
-    ) async {
+    testWidgets('shows the bound key caps', (tester) async {
       final container = _containerFor(
         tester,
         hotKeyActions: [
           HotKeyAction(
-            action: HotAction.view,
-            key: _keyA,
-            modifiers: const {KeyboardModifier.shift},
-          ),
-        ],
-      );
-      await _pumpView(tester, container);
-
-      final labels = ShortcutLabels.host();
-      expect(find.text(labels.modifier(KeyboardModifier.shift)), findsOne);
-      expect(find.text(labels.key(_keyA)), findsOne);
-
-      await tester.tap(find.byTooltip(currentAppLocalizations.remove));
-      await tester.pumpAndSettle();
-
-      expect(container.read(hotKeyActionsProvider), isEmpty);
-      expect(find.text(labels.key(_keyA)), findsNothing);
-    });
-
-    testWidgets('flags a binding the OS refused', (tester) async {
-      final container = _containerFor(
-        tester,
-        hotKeyActions: [
-          HotKeyAction(
-            action: HotAction.view,
-            key: _keyA,
+            action: HotAction.mode,
+            key: PhysicalKeyboardKey.keyA.usbHidUsage,
             modifiers: const {KeyboardModifier.control},
           ),
         ],
       );
-      container.read(hotKeyFailuresProvider.notifier).value = {
-        HotAction.view: 'already registered',
-      };
-      await _pumpView(tester, container);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const TestApp(child: HotKeyView()),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-      expect(find.text(currentAppLocalizations.hotkeyUnavailable), findsOne);
-      expect(find.byTooltip('already registered'), findsOne);
+      final labels = ShortcutLabels.host();
+      expect(
+        find.text(labels.modifier(KeyboardModifier.control)),
+        findsOneWidget,
+      );
+      expect(
+        find.text(labels.key(PhysicalKeyboardKey.keyA.usbHidUsage)),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), null);
     });
   });
 
   group('HotKeyRecorder', () {
-    testWidgets('pauses global hotkeys while it is open', (tester) async {
-      final container = _containerFor(tester);
-      await _pumpRecorder(
-        tester,
-        container,
-        const HotKeyAction(action: HotAction.mode),
-      );
-
-      expect(container.read(hotKeyRecordingProvider), isTrue);
-
-      await tester.tap(find.text(currentAppLocalizations.cancel));
-      await tester.pumpAndSettle();
-
-      expect(container.read(hotKeyRecordingProvider), isFalse);
-    });
-
-    testWidgets('previews held modifiers until a key completes it', (
-      tester,
-    ) async {
+    testWidgets('prompts for input until a key is captured', (tester) async {
       final container = _containerFor(tester);
       await _pumpRecorder(
         tester,
@@ -222,33 +150,22 @@ void main() {
 
       expect(find.text(currentAppLocalizations.pressKeyboard), findsOne);
 
-      await simulateKeyDownEvent(
-        LogicalKeyboardKey.controlLeft,
-        physicalKey: PhysicalKeyboardKey.controlLeft,
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Ctrl'), findsOne);
-      expect(find.text('…'), findsOne);
-      expect(_button(tester, currentAppLocalizations.save).onPressed, isNull);
-
-      await simulateKeyDownEvent(
+      await _pressWithControl(
+        tester,
+        PhysicalKeyboardKey.keyA,
         LogicalKeyboardKey.keyA,
-        physicalKey: PhysicalKeyboardKey.keyA,
       );
-      await simulateKeyUpEvent(
-        LogicalKeyboardKey.keyA,
-        physicalKey: PhysicalKeyboardKey.keyA,
-      );
-      await simulateKeyUpEvent(
-        LogicalKeyboardKey.controlLeft,
-        physicalKey: PhysicalKeyboardKey.controlLeft,
-      );
-      await tester.pumpAndSettle();
 
-      expect(find.text('…'), findsNothing);
-      expect(find.text('Ctrl'), findsOne);
-      expect(find.text('A'), findsOne);
+      final labels = ShortcutLabels.host();
+      expect(find.text(currentAppLocalizations.pressKeyboard), findsNothing);
+      expect(
+        find.text(labels.modifier(KeyboardModifier.control)),
+        findsOneWidget,
+      );
+      expect(
+        find.text(labels.key(PhysicalKeyboardKey.keyA.usbHidUsage)),
+        findsOneWidget,
+      );
       expect(tester.takeException(), null);
     });
 
@@ -260,18 +177,22 @@ void main() {
         const HotKeyAction(action: HotAction.mode),
       );
 
-      await _pressControlA(tester);
+      await _pressWithControl(
+        tester,
+        PhysicalKeyboardKey.keyA,
+        LogicalKeyboardKey.keyA,
+      );
       await tester.tap(find.text(currentAppLocalizations.save));
       await tester.pumpAndSettle();
 
       final stored = container.read(hotKeyActionsProvider);
       expect(stored, hasLength(1));
       expect(stored.single.action, HotAction.mode);
-      expect(stored.single.key, _keyA);
+      expect(stored.single.key, PhysicalKeyboardKey.keyA.usbHidUsage);
       expect(stored.single.modifiers, {KeyboardModifier.control});
     });
 
-    testWidgets('a bare key cannot be saved and says why', (tester) async {
+    testWidgets('save stays disabled for a bare key', (tester) async {
       final container = _containerFor(tester);
       await _pumpRecorder(
         tester,
@@ -279,24 +200,35 @@ void main() {
         const HotKeyAction(action: HotAction.mode),
       );
 
-      await _press(tester, PhysicalKeyboardKey.keyA, LogicalKeyboardKey.keyA);
+      await simulateKeyDownEvent(
+        LogicalKeyboardKey.keyA,
+        physicalKey: PhysicalKeyboardKey.keyA,
+      );
+      await tester.pumpAndSettle();
+      await simulateKeyUpEvent(
+        LogicalKeyboardKey.keyA,
+        physicalKey: PhysicalKeyboardKey.keyA,
+      );
 
-      expect(_button(tester, currentAppLocalizations.save).onPressed, isNull);
+      final save = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, currentAppLocalizations.save),
+      );
+      expect(save.onPressed, isNull);
       expect(
-        find.text(
-          currentAppLocalizations.hotkeyNeedsModifier('Ctrl, Alt, Shift, Win'),
+        find.textContaining(
+          ShortcutLabels.host().modifier(KeyboardModifier.control),
         ),
-        findsOne,
+        findsWidgets,
       );
       expect(container.read(hotKeyActionsProvider), isEmpty);
     });
 
-    testWidgets('saving a taken combination moves it from the other action', (
+    testWidgets('save moves a combination already bound elsewhere', (
       tester,
     ) async {
       final taken = HotKeyAction(
         action: HotAction.start,
-        key: _keyA,
+        key: PhysicalKeyboardKey.keyA.usbHidUsage,
         modifiers: const {KeyboardModifier.control},
       );
       final container = _containerFor(tester, hotKeyActions: [taken]);
@@ -306,22 +238,19 @@ void main() {
         const HotKeyAction(action: HotAction.mode),
       );
 
-      await _pressControlA(tester);
-
-      expect(
-        find.text(
-          currentAppLocalizations.hotkeyConflictWith(HotAction.start.label),
-        ),
-        findsOne,
+      await _pressWithControl(
+        tester,
+        PhysicalKeyboardKey.keyA,
+        LogicalKeyboardKey.keyA,
       );
-
+      expect(find.textContaining('Start/Stop'), findsOneWidget);
       await tester.tap(find.text(currentAppLocalizations.save));
       await tester.pumpAndSettle();
 
       final stored = container.read(hotKeyActionsProvider);
       expect(stored, hasLength(1));
       expect(stored.single.action, HotAction.mode);
-      expect(stored.single.key, _keyA);
+      expect(stored.single.key, PhysicalKeyboardKey.keyA.usbHidUsage);
     });
 
     testWidgets('save replaces the binding for the same action', (
@@ -329,67 +258,39 @@ void main() {
     ) async {
       final existing = HotKeyAction(
         action: HotAction.mode,
-        key: _keyB,
+        key: PhysicalKeyboardKey.keyB.usbHidUsage,
         modifiers: const {KeyboardModifier.control},
       );
       final container = _containerFor(tester, hotKeyActions: [existing]);
       await _pumpRecorder(tester, container, existing);
 
-      await _pressControlA(tester);
+      await _pressWithControl(
+        tester,
+        PhysicalKeyboardKey.keyA,
+        LogicalKeyboardKey.keyA,
+      );
       await tester.tap(find.text(currentAppLocalizations.save));
       await tester.pumpAndSettle();
 
       final stored = container.read(hotKeyActionsProvider);
       expect(stored, hasLength(1), reason: 'replaces rather than appends');
-      expect(stored.single.key, _keyA);
+      expect(stored.single.key, PhysicalKeyboardKey.keyA.usbHidUsage);
     });
 
-    testWidgets('remove clears the binding for the action', (tester) async {
+    testWidgets('remove clears the key and modifiers for the action', (
+      tester,
+    ) async {
       final existing = HotKeyAction(
         action: HotAction.mode,
-        key: _keyB,
+        key: PhysicalKeyboardKey.keyB.usbHidUsage,
         modifiers: const {KeyboardModifier.control},
       );
-      final other = HotKeyAction(
-        action: HotAction.tun,
-        key: _keyA,
-        modifiers: const {KeyboardModifier.control},
-      );
-      final container = _containerFor(tester, hotKeyActions: [existing, other]);
+      final container = _containerFor(tester, hotKeyActions: [existing]);
       await _pumpRecorder(tester, container, existing);
 
       await tester.tap(find.text(currentAppLocalizations.remove));
       await tester.pumpAndSettle();
 
-      expect(container.read(hotKeyActionsProvider), [other]);
-    });
-
-    testWidgets('remove is offered only for a bound action', (tester) async {
-      final container = _containerFor(tester);
-      await _pumpRecorder(
-        tester,
-        container,
-        const HotKeyAction(action: HotAction.mode),
-      );
-
-      expect(find.text(currentAppLocalizations.remove), findsNothing);
-    });
-
-    testWidgets('a bare Escape closes without saving', (tester) async {
-      final container = _containerFor(tester);
-      await _pumpRecorder(
-        tester,
-        container,
-        const HotKeyAction(action: HotAction.mode),
-      );
-
-      await _press(
-        tester,
-        PhysicalKeyboardKey.escape,
-        LogicalKeyboardKey.escape,
-      );
-
-      expect(find.byType(HotKeyRecorder), findsNothing);
       expect(container.read(hotKeyActionsProvider), isEmpty);
     });
   });

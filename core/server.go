@@ -1,6 +1,6 @@
-//go:build !android
+//go:build !((android || ios) && cgo)
 
-package core
+package main
 
 import (
 	"encoding/binary"
@@ -42,13 +42,20 @@ func logDeliveryError(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[ERROR] "+format+"\n", args...)
 }
 
+func (response MethodResponse) send() {
+	data, err := response.JSON()
+	if err != nil {
+		logError("MethodResponse marshal error: id=%s err=%v", response.ID, err)
+		return
+	}
+	send(data)
+}
+
 func deliverEvent(data []byte) {
 	send(data)
 }
 
-// The desktop core exits with its host connection, so it is always heard.
-func hasEventListener() bool {
-	return true
+func writeSystemLog(level, message string) {
 }
 
 func writeFrame(w io.Writer, data []byte) (int, error) {
@@ -120,11 +127,11 @@ func writeAll(w io.Writer, data []byte) (int, error) {
 }
 
 func readFrame(r io.Reader) ([]byte, error) {
-	lenBuf := [4]byte{}
-	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+	lenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(r, lenBuf); err != nil {
 		return nil, err
 	}
-	length := binary.LittleEndian.Uint32(lenBuf[:])
+	length := binary.LittleEndian.Uint32(lenBuf)
 	if length > maxIPCFrameSize {
 		return nil, fmt.Errorf("IPC frame exceeds %d bytes", maxIPCFrameSize)
 	}
@@ -168,7 +175,7 @@ func send(data []byte) {
 	_ = c.Close()
 }
 
-func StartServer(arg string) {
+func startServer(arg string) {
 	dialed, err := dial(arg)
 	if err != nil {
 		panic(err.Error())
@@ -208,6 +215,6 @@ func serve(dialed ipcConn) {
 			continue
 		}
 
-		dispatchMethodCall(call, send)
+		go handleMethodCall(call, newMethodResponse(call.ID, nil))
 	}
 }

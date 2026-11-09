@@ -251,6 +251,30 @@ void main() {
       );
     });
 
+    test('writes KDE https proxy over HTTP and keeps bypass exceptions', () {
+      final commands = LinuxProxyCommands.buildStart(
+        port: 7890,
+        bypassDomain: ['localhost'],
+        desktop: 'KDE',
+        homeDir: '/home/user',
+      );
+
+      String? valueFor(String key) {
+        for (final command in commands) {
+          final keyIndex = command.args.indexOf('--key');
+          if (keyIndex >= 0 && command.args[keyIndex + 1] == key) {
+            return command.args[keyIndex + 2];
+          }
+        }
+        return null;
+      }
+
+      expect(valueFor('httpProxy'), 'http://127.0.0.1:7890');
+      expect(valueFor('httpsProxy'), 'http://127.0.0.1:7890');
+      expect(valueFor('socksProxy'), 'socks://127.0.0.1:7890');
+      expect(valueFor('ReversedException'), 'false');
+    });
+
     test('prefers kwriteconfig6 for KDE when available', () {
       final commands = LinuxProxyCommands.buildStart(
         port: 7890,
@@ -266,8 +290,7 @@ void main() {
       });
     });
 
-    test('points every KDE proxy at the plain HTTP or SOCKS listener and '
-        'tells running KIO programs to reload', () {
+    test('tells running KIO programs to reload after a KDE change', () {
       for (final commands in [
         LinuxProxyCommands.buildStart(
           port: 7890,
@@ -293,22 +316,6 @@ void main() {
         ]);
         expect(reload.optional, isTrue);
       }
-      final proxies = {
-        for (final command in LinuxProxyCommands.buildStart(
-          port: 7890,
-          bypassDomain: ['localhost'],
-          desktop: 'KDE',
-          homeDir: '/home/user',
-          availableExecutables: {'kwriteconfig6'},
-        ))
-          if (command.args.length > 6 && command.args[5].endsWith('Proxy'))
-            command.args[5]: command.args[6],
-      };
-      expect(proxies, {
-        'httpProxy': 'http://127.0.0.1:7890',
-        'httpsProxy': 'http://127.0.0.1:7890',
-        'socksProxy': 'socks://127.0.0.1:7890',
-      });
     });
 
     test(
@@ -431,26 +438,31 @@ USB 10/100/1000 LAN
   });
 
   group('windowsBypassList', () {
-    test('adds the intranet token once', () {
+    test('passes the intranet token through only when listed', () {
       expect(windowsBypassList(['localhost', '127.*', '<local>']), [
         'localhost',
         '127.*',
         '<local>',
       ]);
-      expect(windowsBypassList(['localhost']), ['localhost', '<local>']);
+      expect(windowsBypassList(['localhost']), ['localhost']);
     });
 
     test('brackets bare IPv6 literals and drops blank entries', () {
       expect(
         windowsBypassList([' ::1 ', 'fe80::1', '', '[fd00::1]', '*.lan']),
-        ['[::1]', '[fe80::1]', '[fd00::1]', '*.lan', '<local>'],
+        ['[::1]', '[fe80::1]', '[fd00::1]', '*.lan'],
       );
     });
 
-    test('drops trailing slashes that fail the whole list', () {
+    test('brackets IPv6 CIDR blocks and drops zone IDs', () {
       expect(
-        windowsBypassList(['example.test/', 'example.test', 'nas//', '/']),
-        ['example.test', 'nas', '<local>'],
+        windowsBypassList([
+          'fc00::/7',
+          'fe80::1%1',
+          'fe80::%eth0/10',
+          '10.0.0.0/8',
+        ]),
+        ['[fc00::]/7', '[fe80::1]', '[fe80::]/10', '10.0.0.0/8'],
       );
     });
   });
@@ -479,6 +491,23 @@ USB 10/100/1000 LAN
         'port': 7890,
         'bypassDomain': ['localhost'],
       });
+    });
+
+    test('forwards conditional and unconditional Windows cleanup', () async {
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(proxy.methodChannel, (call) async {
+            calls.add(call);
+            return true;
+          });
+
+      expect(await proxy.stopProxy(onlyIfNeeded: true), isTrue);
+      expect(await proxy.stopProxy(), isTrue);
+      expect(calls.map((call) => call.method), ['StopProxy', 'StopProxy']);
+      expect(calls.map((call) => call.arguments), [
+        {'onlyIfNeeded': true},
+        {'onlyIfNeeded': false},
+      ]);
     });
 
     test('maps a null native response to false', () async {

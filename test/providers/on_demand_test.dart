@@ -2,13 +2,21 @@ import 'dart:async';
 
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/plugins/battery.dart';
-import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/on_demand.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
+
+class _SupportedLocationPermissions extends LocationPermissions {
+  _SupportedLocationPermissions({this.isSupported = true});
+
+  final bool isSupported;
+
+  @override
+  bool get supported => isSupported;
+}
 
 class _AndroidBatteryOptimizationIgnored extends BatteryOptimizationIgnored {
   @override
@@ -32,9 +40,14 @@ void main() {
       });
     }
 
-    ProviderContainer excluding(List<String> ssids) {
+    ProviderContainer excluding(List<String>? ssids, {bool supported = true}) {
       return ProviderContainer(
-        overrides: [excludeSSIDsProvider.overrideWithValue(ssids)],
+        overrides: [
+          if (ssids != null) excludeSSIDsProvider.overrideWithValue(ssids),
+          locationPermissionsProvider.overrideWith(
+            () => _SupportedLocationPermissions(isSupported: supported),
+          ),
+        ],
       );
     }
 
@@ -69,24 +82,22 @@ void main() {
       );
     });
 
-    test('a safe mode build neither checks nor requests location', () async {
-      container.dispose();
-      container = ProviderContainer(
-        overrides: [
-          excludeSSIDsProvider.overrideWithValue(const ['Office Wi-Fi']),
-          safeModeProvider.overrideWithValue(true),
-        ],
-      );
-      answer((_) async => 0);
+    test(
+      'a platform without the permission neither checks nor requests',
+      () async {
+        container.dispose();
+        container = excluding(const ['Office Wi-Fi'], supported: false);
+        answer((_) async => 0);
 
-      await notifier().refresh();
+        await notifier().refresh();
 
-      expect(calls, isEmpty);
-      expect(
-        container.read(locationPermissionsProvider),
-        WifiSsidPermission.denied,
-      );
-    });
+        expect(calls, isEmpty);
+        expect(
+          container.read(locationPermissionsProvider),
+          WifiSsidPermission.denied,
+        );
+      },
+    );
 
     test('nothing is asked while no network is excluded', () async {
       container.dispose();
@@ -109,7 +120,7 @@ void main() {
 
     test('an empty excluded list re-arms the auto-request', () async {
       container.dispose();
-      container = ProviderContainer();
+      container = excluding(null);
       answer((_) async => 1);
 
       await notifier().refresh();
@@ -276,18 +287,6 @@ void main() {
       await first;
 
       expect(calls, ['requestIgnoreOptimizations']);
-    });
-
-    test('coming back to the app leaves the state to the stream', () async {
-      answer((_) async => null);
-      await watch();
-
-      container.read(appVisibleProvider.notifier).value = false;
-      container.read(appVisibleProvider.notifier).value = true;
-      await pumpEventQueue();
-
-      expect(calls, isEmpty);
-      expect(ignored(), isFalse);
     });
 
     test('a platform without the prompt counts as exempt', () async {

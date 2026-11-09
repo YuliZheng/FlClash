@@ -1,0 +1,149 @@
+package cc.chenx.flclash.plugins
+
+import cc.chenx.flclash.ServiceController
+import cc.chenx.flclash.ServiceState
+import cc.chenx.flclash.RunState
+import cc.chenx.flclash.invokeMethodOnMainThread
+import cc.chenx.flclash.common.Components
+import cc.chenx.flclash.models.SharedState
+import com.google.gson.Gson
+import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+class ServicePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+    private lateinit var channel: MethodChannel
+    private lateinit var scope: CoroutineScope
+    private val gson = Gson()
+    private var commandCount = 0
+
+    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        channel = MethodChannel(binding.binaryMessenger, "${Components.PACKAGE_NAME}/service")
+        channel.setMethodCallHandler(this)
+        scope.launch {
+            ServiceState.runState.collect { state ->
+                val tunnelState = when (state) {
+                    RunState.STARTED -> "connected"
+                    RunState.STOPPED -> "disconnected"
+                    RunState.STARTING, RunState.STOPPING -> "pending"
+                }
+                channel.invokeMethodOnMainThread("tunnelState", tunnelState)
+            }
+        }
+    }
+
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        channel.setMethodCallHandler(null)
+        scope.cancel()
+        ServiceController.setEventListener(null)
+    }
+
+    override fun onMethodCall(call: MethodCall, rawResult: MethodChannel.Result) {
+        // Most handlers below reply from a scope worker on Dispatchers.Default,
+        // but a MethodChannel.Result has to be answered on the platform thread.
+        // Wrapping once here covers every branch, including notImplemented.
+        val result = MainThreadResult(rawResult)
+        when (call.method) {
+            "init" -> initialize(result)
+            "shutdown" -> shutdown(result)
+            "invokeMethod" -> invokeMethod(call, result)
+            "getRunTime" -> getRunTime(result)
+            "getActiveVpnOptions" -> scope.launch {
+                result.success(ServiceController.runtime?.requested?.let { gson.toJson(it) })
+            }
+            "syncState" -> syncState(call, result)
+            "start" -> start(call, result)
+            "stop" -> stop(result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun initialize(result: MethodChannel.Result) {
+        ServiceController.setEventListener(::sendEvent)
+            .onSuccess { result.success("") }
+            .onFailure { error -> result.success(error.message.orEmpty()) }
+    }
+
+    private fun shutdown(result: MethodChannel.Result) {
+        ServiceController.setEventListener(null)
+        result.success(true)
+    }
+
+    private fun invokeMethod(call: MethodCall, result: MethodChannel.Result) {
+        val data = call.arguments as? String
+        if (data == null) {
+            result.error("INVALID_ARGUMENT", "Method call payload must be a string", null)
+            return
+        }
+        scope.launch {
+            ServiceController.invokeMethod(data) { response ->
+                result.success(response)
+            }.onFailure { error ->
+                result.error("CORE_ERROR", error.message, null)
+            }
+        }
+    }
+
+    private fun getRunTime(result: MethodChannel.Result) {
+        scope.launch {
+            result.success(ServiceState.awaitRunTime())
+        }
+    }
+
+    private fun syncState(call: MethodCall, result: MethodChannel.Result) {
+        val state = sharedState(call)
+        if (state == null) {
+            result.success("Invalid shared state")
+            return
+        }
+        ServiceState.syncSharedState(state)
+        result.success("")
+    }
+
+    private fun start(call: MethodCall, result: MethodChannel.Result) {
+        commandCount++
+        val state = sharedState(call)
+        if (state == null) {
+            result.success(false)
+            return
+        }
+        ServiceState.syncSharedState(state)
+        ServiceState.requestStart()
+        result.success(true)
+    }
+
+    private fun sharedState(call: MethodCall): SharedState? {
+        val data = call.arguments as? String ?: return null
+        return runCatching {
+            gson.fromJson(data, SharedState::class.java)
+        }.getOrNull()
+    }
+
+    private fun stop(result: MethodChannel.Result) {
+        commandCount++
+        ServiceState.requestStop()
+        result.success(true)
+    }
+
+    // Read on the platform thread, where start and stop arrive: the count and the intent are one
+    // instant, and Dart drops the report unless the count matches the commands it has sent.
+    fun notifyStopped() {
+        scope.launch(Dispatchers.Main) {
+            if (!ServiceState.isRunRequested) {
+                channel.invokeMethod("stopped", commandCount)
+            }
+        }
+    }
+
+    private fun sendEvent(value: String?) {
+        scope.launch(Dispatchers.Main) {
+            channel.invokeMethod("event", value)
+        }
+    }
+}

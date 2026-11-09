@@ -50,14 +50,17 @@ class Proxy {
     };
   }
 
-  Future<bool> stopProxy() async {
+  Future<bool> stopProxy({bool onlyIfNeeded = false}) async {
     return switch (Platform.operatingSystem) {
-      'macos' => await _macosProxy.stop(),
+      'macos' => await _macosProxy.stop(onlyIfNeeded: onlyIfNeeded),
       'linux' => await _linuxProxy.stop(
+        onlyIfNeeded: onlyIfNeeded,
         desktop: Platform.environment['XDG_CURRENT_DESKTOP'],
         homeDir: Platform.environment['HOME'],
       ),
-      'windows' => await ProxyPlatform.instance.stopProxy(),
+      'windows' => await ProxyPlatform.instance.stopProxy(
+        onlyIfNeeded: onlyIfNeeded,
+      ),
       String() => false,
     };
   }

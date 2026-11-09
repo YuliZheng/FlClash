@@ -1,7 +1,6 @@
-package com.follow.clash.service.models
+package cc.chenx.flclash.service.models
 
-import com.follow.clash.common.AccessControlMode
-import com.google.gson.JsonParser
+import cc.chenx.flclash.common.AccessControlMode
 import java.net.Inet4Address
 import java.net.Inet6Address
 import org.junit.Assert.assertEquals
@@ -13,7 +12,7 @@ private fun optionsWithRoutes(routeAddress: List<String>) = VpnOptions(
     enable = true,
     port = 7890,
     ipv6 = true,
-    dnsHijacking = false,
+    captureDns = false,
     accessControlProps = AccessControlProps(
         enable = false,
         mode = AccessControlMode.ACCEPT_SELECTED,
@@ -22,9 +21,13 @@ private fun optionsWithRoutes(routeAddress: List<String>) = VpnOptions(
     ),
     allowBypass = false,
     systemProxy = true,
+    suspendSupport = null,
     bypassDomain = emptyList(),
     stack = "gvisor",
+    mtu = null,
     routeAddress = routeAddress,
+    disableIcmpForwarding = false,
+    endpointIndependentNat = false,
 )
 
 class ToCIDRTest {
@@ -141,32 +144,5 @@ class RouteAddressTest {
         assertThrows(IllegalArgumentException::class.java) {
             options.getIpv4RouteAddress()
         }
-    }
-}
-
-class TunOptionsTest {
-    @Test
-    fun `an unset mtu falls back to the core default`() {
-        assertEquals(9000, optionsWithRoutes(emptyList()).tunMtu)
-        assertEquals(1400, optionsWithRoutes(emptyList()).copy(mtu = 1400).tunMtu)
-    }
-
-    @Test
-    fun `hands the core the mtu the builder was given`() {
-        val options = optionsWithRoutes(emptyList()).copy(congestionController = "bbr")
-
-        val json = JsonParser.parseString(options.tunOptions).asJsonObject
-
-        assertEquals(9000, json["mtu"].asInt)
-        assertEquals("bbr", json["congestion-controller"].asString)
-    }
-
-    @Test
-    fun `a state saved before the options existed still encodes`() {
-        val options = optionsWithRoutes(emptyList()).copy(congestionController = null)
-
-        val json = JsonParser.parseString(options.tunOptions).asJsonObject
-
-        assertEquals("", json["congestion-controller"].asString)
     }
 }

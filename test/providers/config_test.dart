@@ -21,16 +21,23 @@ void main() {
       final value = container.read(appSettingProvider);
       expect(value.onlyStatisticsProxy, false);
       expect(value.autoLaunch, false);
-      expect(value.closeConnections, true);
-      expect(value.tabAnimation, TabAnimation.fade);
+      expect(value.closeConnections, false);
+      expect(value.promptCloseConnections, true);
+      expect(value.isAnimateToPage, true);
     });
 
     test('can update state', () {
       container
           .read(appSettingProvider.notifier)
-          .update((_) => const AppSettingProps(autoLaunch: true));
+          .update(
+            (_) => const AppSettingProps(
+              autoLaunch: true,
+              promptCloseConnections: false,
+            ),
+          );
       final value = container.read(appSettingProvider);
       expect(value.autoLaunch, true);
+      expect(value.promptCloseConnections, false);
     });
   });
 
@@ -125,6 +132,17 @@ void main() {
     });
   });
 
+  group('OverrideDns provider', () {
+    test('default is false', () {
+      expect(container.read(overrideDnsProvider), false);
+    });
+
+    test('can toggle on', () {
+      container.read(overrideDnsProvider.notifier).update((_) => true);
+      expect(container.read(overrideDnsProvider), true);
+    });
+  });
+
   group('ExcludeSSIDs provider', () {
     test('reorders with final insertion index semantics', () {
       container
@@ -141,6 +159,16 @@ void main() {
         'Hotel',
         'Office',
       ]);
+    });
+  });
+
+  group('AlwaysOn provider', () {
+    test('is persisted through configProvider', () {
+      expect(container.read(alwaysOnProvider), false);
+
+      container.read(alwaysOnProvider.notifier).value = true;
+
+      expect(container.read(configProvider).alwaysOn, true);
     });
   });
 
@@ -167,7 +195,7 @@ void main() {
   group('ProxiesStyleSetting provider', () {
     test('default values', () {
       final value = container.read(proxiesStyleSettingProvider);
-      expect(value.type, ProxiesType.list);
+      expect(value.type, ProxiesType.tab);
     });
 
     test('can update state', () {
@@ -191,60 +219,58 @@ void main() {
       expect(config.vpnProps.enable, true);
       expect(config.networkProps.systemProxy, true);
       expect(config.currentProfileId, null);
+      expect(config.overrideDns, false);
+      expect(config.overrideNtp, false);
+      expect(config.overrideSniffer, false);
       expect(config.hotKeyActions, isEmpty);
       expect(config.patchClashConfig, const PatchClashConfig());
       expect(config.excludeSSIDs, isEmpty);
+      expect(config.alwaysOn, false);
     });
 
     test('reflects updated sub-provider values', () {
       container.read(currentProfileIdProvider.notifier).update((_) => 99);
+      container.read(overrideDnsProvider.notifier).update((_) => true);
       container
           .read(patchClashConfigProvider.notifier)
           .update((_) => const PatchClashConfig(mixedPort: 7890));
       container
           .read(excludeSSIDsProvider.notifier)
           .update((_) => ['Office Wi-Fi']);
+      container.read(alwaysOnProvider.notifier).value = true;
 
       final config = container.read(configProvider);
       expect(config.currentProfileId, 99);
+      expect(config.overrideDns, true);
       expect(config.patchClashConfig.mixedPort, 7890);
       expect(config.excludeSSIDs, ['Office Wi-Fi']);
-    });
-  });
-
-  group('writeConfig', () {
-    test('never leaves a restored open controller without a secret', () {
-      final ref = container.read(Provider<Ref>((ref) => ref));
-
-      writeConfig(
-        ref,
-        const Config(
-          themeProps: ThemeProps(),
-          patchClashConfig: PatchClashConfig(
-            externalController: ExternalControllerStatus.open,
-          ),
-        ),
-      );
-
-      expect(container.read(patchClashConfigProvider).secret, hasLength(32));
+      expect(config.alwaysOn, true);
     });
   });
 
   group('buildConfigOverrides', () {
     test('produces correct overrides', () {
-      const config = Config(themeProps: ThemeProps(), currentProfileId: 7);
+      const config = Config(
+        themeProps: ThemeProps(),
+        currentProfileId: 7,
+        overrideDns: true,
+      );
       final overrides = buildConfigOverrides(config);
-      expect(overrides.length, 11);
+      expect(overrides.length, 15);
 
       final overrideContainer = ProviderContainer(overrides: overrides);
       addTearDown(overrideContainer.dispose);
 
       expect(overrideContainer.read(currentProfileIdProvider), 7);
+      expect(overrideContainer.read(overrideDnsProvider), true);
+      expect(overrideContainer.read(overrideNtpProvider), false);
+      expect(overrideContainer.read(overrideSnifferProvider), false);
       expect(
         overrideContainer.read(patchClashConfigProvider),
         config.patchClashConfig,
       );
       expect(overrideContainer.read(excludeSSIDsProvider), config.excludeSSIDs);
+      expect(overrideContainer.read(alwaysOnProvider), config.alwaysOn);
       expect(
         overrideContainer.read(appSettingProvider).onlyStatisticsProxy,
         false,

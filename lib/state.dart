@@ -1,27 +1,27 @@
 import 'dart:async';
 
+import 'common/common.dart';
+import 'enum/enum.dart';
+
+import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
-import 'package:fl_clash/ui/ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import 'common/common.dart';
-import 'enum/enum.dart';
-import 'models/models.dart';
-
 class GlobalState {
   static GlobalState? _instance;
   GlobalKey<NavigatorState> get navigatorKey => rootNavigatorKey;
-  late String appEnv;
-  late PackageInfo packageInfo;
+  late final String appEnv;
+  late final PackageInfo packageInfo;
+  final isBackground = ValueNotifier<bool>(false);
+  Function? updateCurrentDelayDebounce;
   late Measure measure;
+  late CommonTheme theme;
   late ProviderContainer container;
   bool needInitStatus = true;
-
-  bool get isPre => appEnv != 'stable';
 
   bool get canCrashCore => canCrashCoreFor(isDebug: kDebugMode, appEnv: appEnv);
 
@@ -31,7 +31,6 @@ class GlobalState {
   }
 
   String? lastConfigMd5;
-  ConfigCounts? lastConfigCounts;
   bool isAttach = false;
 
   GlobalState._internal();
@@ -44,6 +43,40 @@ class GlobalState {
   String get ua => container
       .read(patchClashConfigProvider.select((state) => state.globalUa))
       .takeFirstValid([packageInfo.ua]);
+
+  void _handleBackground() {
+    foregroundTicker.pause();
+    render?.pause();
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    WidgetsBinding.instance.handleMemoryPressure();
+  }
+
+  void _handleForeground() {
+    foregroundTicker.resume();
+    render?.resume();
+  }
+
+  void handleBackground() {
+    isBackground.value = true;
+    throttler.cancel(FunctionTag.foreground);
+    debouncer.call(
+      FunctionTag.background,
+      _handleBackground,
+      duration: foregroundTicker.interval,
+    );
+  }
+
+  void handleForeground() {
+    isBackground.value = false;
+    debouncer.cancel(FunctionTag.background);
+    throttler.call(
+      FunctionTag.foreground,
+      _handleForeground,
+      duration: foregroundTicker.interval,
+      fire: true,
+    );
+  }
 
   Future<T?> loadingRun<T>(
     FutureOr<T> Function() futureFunction, {
@@ -68,39 +101,6 @@ class GlobalState {
     );
   }
 
-  /// Concurrent [loadingRun]s would let the first to finish clear [tag].
-  Future<void> batchRun<T>(
-    List<T> items,
-    Future<void> Function(T item) task, {
-    required String Function(T item) label,
-    required int concurrency,
-    required LoadingTag? tag,
-  }) async {
-    final pool = TaskPool(concurrency);
-    final failures = List<UpdatingMessage?>.filled(items.length, null);
-    await loadingRun(
-      () => Future.wait([
-        for (final (index, item) in items.indexed)
-          pool.run(() async {
-            try {
-              await task(item);
-            } catch (e, s) {
-              commonPrint.log(
-                '${label(item)} ===> ${compactError(e)}, $s',
-                logLevel: LogLevel.warning,
-              );
-              failures[index] = UpdatingMessage(
-                label: label(item),
-                message: userFacingErrorMessage(e, currentAppLocalizations),
-              );
-            }
-          }),
-      ]),
-      tag: tag,
-    );
-    dialogs.showFailures(failures.nonNulls.toList());
-  }
-
   Future<T?> safeRun<T>(
     FutureOr<T> Function() futureFunction, {
     String? title,
@@ -123,7 +123,7 @@ class GlobalState {
         dialogs.showNotifier(message, level: MessageLevel.error);
       } else {
         unawaited(
-          dialogs.showAlert(
+          dialogs.showMessage(
             title: title ?? currentAppLocalizations.tip,
             message: TextSpan(text: message),
           ),

@@ -1,7 +1,5 @@
-import 'dart:async';
-
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,9 +16,10 @@ Widget _buildPage({bool wrapNavigator = false}) {
           ),
       ],
     ),
-    floatingActionButton: FloatingActionButton(
+    floatingActionButton: CommonFloatingActionButton(
       onPressed: () {},
-      child: const GlyphIcon(AppGlyphs.add, fill: 1),
+      icon: const Icon(Symbols.add),
+      label: 'add',
     ),
   );
   final scopedPage = PageFocusScope(child: page);
@@ -72,6 +71,84 @@ String? _focusedItemKey() {
 }
 
 void main() {
+  for (final wrapNavigator in [false, true]) {
+    for (final direction in [
+      LogicalKeyboardKey.arrowRight,
+      LogicalKeyboardKey.arrowDown,
+    ]) {
+      testWidgets(
+        'TV FAB moves ${direction.keyLabel} inside page (navigator: $wrapNavigator)',
+        (tester) async {
+          final fabFocus = FocusNode();
+          final actionFocus = FocusNode();
+          final bodyFocus = FocusNode();
+          addTearDown(fabFocus.dispose);
+          addTearDown(actionFocus.dispose);
+          addTearDown(bodyFocus.dispose);
+          final page = PageFocusScope(
+            child: Scaffold(
+              appBar: AppBar(
+                actions: [
+                  FocusTraversalOrder(
+                    order: const PrimaryFocusOrder(),
+                    child: FloatingActionButton(
+                      focusNode: fabFocus,
+                      onPressed: () {},
+                      child: const Icon(Symbols.play_arrow),
+                    ),
+                  ),
+                  IconButton(
+                    focusNode: actionFocus,
+                    tooltip: 'Add',
+                    onPressed: () {},
+                    icon: const Icon(Symbols.add),
+                  ),
+                ],
+              ),
+              body: Align(
+                alignment: Alignment.topRight,
+                child: TextButton(
+                  focusNode: bodyFocus,
+                  onPressed: () {},
+                  child: const Text('Content'),
+                ),
+              ),
+            ),
+          );
+          await _pumpWithOutsideFocus(
+            tester,
+            FocusTraversalGroup(
+              policy: PageTraversalPolicy(),
+              child: wrapNavigator
+                  ? Navigator(
+                      pages: [MaterialPage(child: page)],
+                      onDidRemovePage: (_) {},
+                    )
+                  : page,
+            ),
+          );
+          fabFocus.requestFocus();
+          await tester.pump();
+
+          await tester.sendKeyEvent(direction);
+          await tester.pump();
+
+          expect(
+            direction == LogicalKeyboardKey.arrowRight
+                ? actionFocus.hasPrimaryFocus
+                : bodyFocus.hasPrimaryFocus,
+            isTrue,
+          );
+          if (direction == LogicalKeyboardKey.arrowRight) {
+            await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+            await tester.pump();
+            expect(fabFocus.hasPrimaryFocus, isTrue);
+          }
+        },
+      );
+    }
+  }
+
   for (final wrapNavigator in [false, true]) {
     testWidgets(
       'page${wrapNavigator ? ' navigator' : ''} uses natural focus order',
@@ -141,100 +218,6 @@ void main() {
     expect(_focusedItemKey(), 'item1');
   });
 
-  testWidgets('down stays on the last control when nothing lies below', (
-    tester,
-  ) async {
-    final outsideFocus = await _pumpWithOutsideFocus(tester, _buildPage());
-
-    for (var i = 0; i < 4; i++) {
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pump();
-    }
-    expect(_isFabFocused(), isTrue);
-
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await tester.pump();
-
-    expect(_isFabFocused(), isTrue);
-    expect(FocusManager.instance.primaryFocus, isNot(outsideFocus));
-  });
-
-  testWidgets('left picks the sidebar item beside the focused row', (
-    tester,
-  ) async {
-    final sidebarFocus = List.generate(3, (_) => FocusNode());
-    for (final node in sidebarFocus) {
-      addTearDown(node.dispose);
-    }
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Column(
-              children: [
-                for (final node in sidebarFocus)
-                  Focus(
-                    focusNode: node,
-                    child: const SizedBox(width: 80, height: 48),
-                  ),
-              ],
-            ),
-            Expanded(child: _buildPage(wrapNavigator: true)),
-          ],
-        ),
-      ),
-    );
-    await tester.pump();
-    sidebarFocus.first.requestFocus();
-    await tester.pump();
-
-    for (var i = 0; i < 5; i++) {
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pump();
-    }
-    expect(_focusedItemKey(), 'item2');
-
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
-    await tester.pump();
-
-    expect(FocusManager.instance.primaryFocus, sidebarFocus[2]);
-  });
-
-  testWidgets('down from the last control reaches a bar below the page', (
-    tester,
-  ) async {
-    final barFocus = FocusNode();
-    addTearDown(barFocus.dispose);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Column(
-          children: [
-            Expanded(child: _buildPage()),
-            Focus(
-              focusNode: barFocus,
-              child: const SizedBox(height: 80, width: double.infinity),
-            ),
-          ],
-        ),
-      ),
-    );
-    await tester.pump();
-    barFocus.requestFocus();
-    await tester.pump();
-
-    for (var i = 0; i < 4; i++) {
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pump();
-    }
-    expect(_isFabFocused(), isTrue);
-
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await tester.pump();
-
-    expect(FocusManager.instance.primaryFocus, barFocus);
-  });
-
   testWidgets('left leaves page content for an adjacent sidebar', (
     tester,
   ) async {
@@ -265,40 +248,5 @@ void main() {
     await tester.pump();
 
     expect(FocusManager.instance.primaryFocus, sidebarFocus);
-  });
-
-  testWidgets('left stays in a pushed page instead of the page it covers', (
-    tester,
-  ) async {
-    final coveredFocus = FocusNode();
-    addTearDown(coveredFocus.dispose);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Row(
-          children: [
-            Focus(
-              focusNode: coveredFocus,
-              child: const SizedBox(width: 80, height: 600),
-            ),
-            const Expanded(child: SizedBox()),
-          ],
-        ),
-      ),
-    );
-    unawaited(
-      tester
-          .state<NavigatorState>(find.byType(Navigator))
-          .push(MaterialPageRoute<void>(builder: (_) => _buildPage())),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-    await tester.pump();
-    expect(_focusedItemKey(), 'item0');
-
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
-    await tester.pump();
-
-    expect(_focusedItemKey(), 'item0');
   });
 }

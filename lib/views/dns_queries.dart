@@ -1,11 +1,14 @@
+import 'dart:async';
+
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/core/method.dart';
+import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/features/features.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/widgets.dart';
-import 'package:flutter/services.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
@@ -17,8 +20,8 @@ class DnsQueryListController extends ValueNotifier<DnsQueriesState> {
     value = value.copyWith(query: query);
   }
 
-  void updateKeywords(List<String> keywords) {
-    value = value.copyWith(keywords: keywords);
+  void setUseRegex(bool useRegex) {
+    value = value.copyWith(useRegex: useRegex);
   }
 
   void setDnsQueries(List<DnsQuery> dnsQueries) {
@@ -46,28 +49,43 @@ class DnsQueryListController extends ValueNotifier<DnsQueriesState> {
 }
 
 class DnsQueriesView extends ConsumerStatefulWidget {
-  final ScrollController? scrollController;
-
-  const DnsQueriesView({super.key, this.scrollController});
+  const DnsQueriesView({super.key});
 
   @override
   ConsumerState<DnsQueriesView> createState() => _DnsQueriesViewState();
 }
 
-class _DnsQueriesViewState extends ConsumerState<DnsQueriesView>
-    with RouteMotionHoldMixin<DnsQueriesView> {
+class _DnsQueriesViewState extends ConsumerState<DnsQueriesView> {
   final _listController = DnsQueryListController();
   late final ScrollController _scrollController;
-  late final _physics = FollowEndScrollPhysics(
-    isFollowing: () => _listController.value.autoScrollToEnd,
-  );
+  late final CoreController _core;
+  DnsQueryFilter _filter = const DnsQueryFilter();
+  bool _showFilterBar = false;
+  bool _listening = false;
+
+  void _setFilter(DnsQueryFilter filter) {
+    setState(() {
+      _filter = filter;
+      if (filter.isNotEmpty) _showFilterBar = true;
+    });
+  }
+
+  void _toggleFilterBar() {
+    setState(() {
+      if (_showFilterBar || _filter.isNotEmpty) {
+        _showFilterBar = false;
+        _filter = const DnsQueryFilter();
+      } else {
+        _showFilterBar = true;
+      }
+    });
+  }
 
   @override
   void initState() {
     super.initState();
-    _scrollController =
-        widget.scrollController ??
-        sheetScrollController(context, initialScrollOffset: double.maxFinite);
+    _core = ref.read(coreHandlerProvider);
+    _scrollController = ScrollController(initialScrollOffset: double.maxFinite);
     _listController.setDnsQueries(ref.read(dnsQueriesProvider).list);
     ref.listenManual(dnsQueriesProvider.select((state) => state.revision), (
       _,
@@ -75,15 +93,56 @@ class _DnsQueriesViewState extends ConsumerState<DnsQueriesView>
     ) {
       _updateDnsQueriesThrottler();
     });
+    ref.listenManual(coreStatusProvider, (_, _) => _syncListening());
+    globalState.isBackground.addListener(_syncListening);
+    _syncListening();
   }
 
   @override
   void dispose() {
+    globalState.isBackground.removeListener(_syncListening);
+    _stopListening();
     _listController.dispose();
-    if (widget.scrollController == null) {
-      _scrollController.dispose();
-    }
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _syncListening() {
+    if (globalState.isBackground.value ||
+        ref.read(coreStatusProvider) != CoreStatus.connected) {
+      _stopListening();
+      return;
+    }
+    _startListening();
+  }
+
+  void _startListening() {
+    if (_listening) return;
+    _listening = true;
+    unawaited(
+      _core.startDnsNotify().then((queries) {
+        if (!mounted || !_listening) return;
+        ref.read(dnsQueriesProvider.notifier).addQueries(queries);
+      }),
+    );
+  }
+
+  void _stopListening() {
+    if (!_listening) return;
+    _listening = false;
+    _core.stopDnsNotify();
+  }
+
+  Future<void> _showLookupDialog() async {
+    await dialogs.showCommonDialog<void>(
+      child: DnsLookupDialog(onQuery: _core.queryDns),
+    );
+  }
+
+  Future<void> _clearDnsCache() async {
+    final cleared = await _core.clearDnsCache();
+    if (!cleared || !mounted) return;
+    context.showNotifier(context.appLocalizations.dnsCacheCleared);
   }
 
   void _updateDnsQueriesThrottler() {
@@ -91,121 +150,144 @@ class _DnsQueriesViewState extends ConsumerState<DnsQueriesView>
       if (!mounted) {
         return;
       }
-      updateWhenRouteSettled(
-        () => _listController.setDnsQueries(ref.read(dnsQueriesProvider).list),
-      );
-    }, duration: renderThrottleDuration);
-  }
-
-  Future<void> _clearDnsCache() async {
-    final appLocalizations = context.appLocalizations;
-    var cleared = false;
-    try {
-      cleared = await ref.read(coreHandlerProvider).clearDnsCache();
-    } catch (error) {
-      commonPrint.log(
-        'clearDnsCache error: $error',
-        logLevel: coreFailureLogLevel(error),
-      );
-    }
-    if (!mounted) {
-      return;
-    }
-    context.showNotifier(
-      cleared
-          ? appLocalizations.dnsCacheCleared
-          : appLocalizations.clearDnsCacheFailed,
-      level: cleared ? MessageLevel.success : MessageLevel.error,
-    );
+      _listController.setDnsQueries(ref.read(dnsQueriesProvider).list);
+    }, duration: commonDuration);
   }
 
   @override
   Widget build(BuildContext context) {
     final appLocalizations = context.appLocalizations;
     return CommonScaffold(
-      title: PageLabel.dns.label,
-      searchState: AppBarSearchState(onSearch: _listController.search),
-      onKeywordsUpdate: _listController.updateKeywords,
-      iconActions: [
-        IconButtonData(
-          glyph: AppGlyphs.broom,
-          tooltip: appLocalizations.clearDnsCache,
-          onPressed: _clearDnsCache,
+      actions: [
+        DnsQueryFilterButton(
+          visible: _showFilterBar,
+          filter: _filter,
+          onPressed: _toggleFilterBar,
+        ),
+        Consumer(
+          builder: (_, ref, _) {
+            final isConnected =
+                ref.watch(coreStatusProvider) == CoreStatus.connected;
+            return CommonPopupBox(
+              targetBuilder: (open) {
+                return IconButton(
+                  tooltip: appLocalizations.more,
+                  onPressed: () {
+                    final isMobile = ref.read(isMobileViewProvider);
+                    open(offset: Offset(0, isMobile ? 0 : 20));
+                  },
+                  icon: const Icon(Symbols.more_vert),
+                );
+              },
+              popupBuilder: (_) => CommonPopupMenu(
+                items: [
+                  CommonPopupMenuItem(
+                    icon: Symbols.send,
+                    label: appLocalizations.queryDns,
+                    onPressed: isConnected ? _showLookupDialog : null,
+                  ),
+                  CommonPopupMenuItem(
+                    icon: Symbols.mop,
+                    label: appLocalizations.clearDnsCache,
+                    onPressed: isConnected ? _clearDnsCache : null,
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ],
+      searchState: AppBarSearchState(
+        onSearch: _listController.search,
+        onRegexChange: (value) {
+          _listController.setUseRegex(value);
+          setState(() {});
+        },
+        useRegex: _listController.value.useRegex,
+      ),
+      title: appLocalizations.dnsQueries,
+      floatingActionButton: ValueListenableBuilder(
+        valueListenable: _listController,
+        builder: (_, state, _) {
+          final autoScrollToEnd = state.autoScrollToEnd;
+          return FadeRotationScaleBox(
+            child: FloatingActionButton(
+              key: ValueKey(autoScrollToEnd),
+              onPressed: () {
+                if (autoScrollToEnd) {
+                  _listController.setAutoScrollToEnd(false);
+                } else {
+                  _listController.resumeAutoScrollToEnd(
+                    ref.read(dnsQueriesProvider).list,
+                  );
+                }
+              },
+              child: autoScrollToEnd
+                  ? const Icon(Symbols.pause)
+                  : const Icon(Symbols.play_arrow),
+            ),
+          );
+        },
+      ),
       body: ValueListenableBuilder<DnsQueriesState>(
         valueListenable: _listController,
         builder: (context, state, _) {
-          final dnsQueries = state.list;
-          return NullStatusSwitcher(
+          final dnsQueries = state.list.withDnsQueryFilter(_filter);
+          final body = NullStatusSwitcher(
             isEmpty: dnsQueries.isEmpty,
-            isSearching: state.isSearching,
             nullStatus: NullStatus(
+              illustration: NullStatusIllustration.requests,
               label: appLocalizations.nullTip(appLocalizations.dnsQueries),
-              illustration: NullStatusIllustration.dns,
             ),
-            child: RecordTableFrame<DnsQuery>(
-              tableId: 'dns',
-              items: dnsQueries,
-              reverse: true,
-              columnsOf: (width) => _dnsQueryColumns(
-                context,
-                wide: width >= recordWideTableWidth,
-              ),
-              builder: (context, table, dnsQueries) => Align(
-                alignment: Alignment.topCenter,
-                child: FloatingScrollbar(
-                  controller: _scrollController,
-                  hintBuilder: (fraction) {
-                    final index = (fraction * (dnsQueries.length - 1)).round();
-                    return dnsQueries[index].time.showFull;
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: FloatingScrollbar(
+                controller: _scrollController,
+                hintBuilder: (fraction) {
+                  final index = (fraction * (dnsQueries.length - 1)).round();
+                  return dnsQueries[index].time.showFull;
+                },
+                child: ScrollToEndBox(
+                  onCancelToEnd: () {
+                    _listController.setAutoScrollToEnd(false);
                   },
-                  child: ScrollToEndBox(
+                  controller: _scrollController,
+                  enable: state.autoScrollToEnd,
+                  dataSource: dnsQueries,
+                  child: SuperListView.separated(
+                    physics: const NextClampingScrollPhysics(),
+                    reverse: true,
+                    shrinkWrap: true,
                     controller: _scrollController,
-                    enable: state.autoScrollToEnd,
-                    onCancelToEnd: () {
-                      _listController.setAutoScrollToEnd(false);
-                    },
-                    onResumeToEnd: () {
-                      _listController.resumeAutoScrollToEnd(
-                        ref.read(dnsQueriesProvider).list,
+                    padding: EdgeInsets.only(
+                      bottom: 16 + BottomInsetScope.of(context),
+                    ),
+                    itemCount: dnsQueries.length,
+                    separatorBuilder: (_, _) => const Divider(height: 0),
+                    itemBuilder: (_, index) {
+                      return DnsQueryItem(
+                        dnsQuery: dnsQueries[index],
+                        filter: _filter,
+                        onClickFilter: (type, value) {
+                          _setFilter(_filter.toggle(type, value));
+                        },
                       );
                     },
-                    child: SuperListView.separated(
-                      reverse: true,
-                      shrinkWrap: true,
-                      physics: _physics,
-                      controller: _scrollController,
-                      padding: EdgeInsets.only(
-                        top: context.contentTopPadding,
-                        bottom: 16 + context.bottomInset,
-                      ),
-                      itemCount: dnsQueries.length,
-                      extentEstimation:
-                          table?.estimateExtent ?? recordListExtentEstimation,
-                      separatorBuilder: (_, _) => table == null
-                          ? const SizedBox(height: recordListGap)
-                          : const SizedBox.shrink(),
-                      itemBuilder: (_, index) {
-                        if (table != null) {
-                          return _DnsQueryTableRow(
-                            dnsQuery: dnsQueries[index],
-                            table: table,
-                            striped: index.isOdd,
-                          );
-                        }
-                        return DnsQueryItem(
-                          dnsQuery: dnsQueries[index],
-                          onClickKeyword: (value) {
-                            context.commonScaffoldState?.addKeyword(value);
-                          },
-                        );
-                      },
-                    ),
                   ),
                 ),
               ),
             ),
+          );
+          return Column(
+            children: [
+              DnsQueryFilterBar(
+                visible: _showFilterBar,
+                dnsQueries: state.dnsQueries,
+                filter: _filter,
+                onChanged: _setFilter,
+              ),
+              Expanded(child: body),
+            ],
           );
         },
       ),
@@ -213,171 +295,261 @@ class _DnsQueriesViewState extends ConsumerState<DnsQueriesView>
   }
 }
 
-void _showDnsQueryDetail(BuildContext context, DnsQuery dnsQuery) {
-  showInSheet<void>(
+void showDnsQueryDetail(
+  BuildContext context, {
+  required DnsQuery dnsQuery,
+  DnsQueryFilter filter = const DnsQueryFilter(),
+  void Function(DnsQueryFilterType type, String value)? onClickFilter,
+}) {
+  showExtend(
     context,
     builder: (_) {
-      return CommonScaffold(
-        body: DnsQueryDetailView(dnsQuery: dnsQuery),
+      return AdaptiveSheetScaffold(
+        sheetTransparentToolBar: true,
         title: context.appLocalizations.details('DNS'),
+        body: DnsQueryDetailView(
+          dnsQuery: dnsQuery,
+          filter: filter,
+          onClickFilter: onClickFilter,
+        ),
       );
     },
   );
 }
 
-List<RecordColumn<DnsQuery>> _dnsQueryColumns(
-  BuildContext context, {
-  required bool wide,
-}) {
-  final appLocalizations = context.appLocalizations;
-  return [
-    RecordColumn(
-      TableColumn('time', appLocalizations.time, width: 80),
-      cell: (_, query) =>
-          RecordCellText(query.time.showTime.trim(), muted: true),
-      sortKey: (query) => query.time,
-      descendingFirst: true,
-    ),
-    RecordColumn(
-      TableColumn('domain', appLocalizations.domain, flex: 1.3),
-      cell: (_, query) => RecordCellText(query.domain),
-      sortKey: (query) => query.domain.toLowerCase(),
-    ),
-    RecordColumn(
-      TableColumn('type', appLocalizations.ipType, width: 72),
-      cell: (_, query) => _DnsKeyword(query.type),
-      sortKey: (query) => query.type,
-    ),
-    RecordColumn(
-      TableColumn('initiator', appLocalizations.initiatorShort, width: 72),
-      cell: (_, query) => switch (query.initiator) {
-        final initiator? => _DnsKeyword(initiator.label),
-        null => const RecordCellText(''),
-      },
-      sortKey: (query) => query.initiator?.label ?? '',
-    ),
-    RecordColumn(
-      TableColumn('result', appLocalizations.result, flex: 1),
-      cell: (_, query) => _DnsResult(query),
-      sortKey: (query) => query.summary.toLowerCase(),
-    ),
-    if (wide)
-      RecordColumn(
-        TableColumn('upstream', appLocalizations.source, flex: 0.8),
-        cell: (_, query) => RecordCellText(query.upstream, muted: true),
-        sortKey: (query) => query.upstream.toLowerCase(),
-      ),
-    RecordColumn(
-      TableColumn('elapsed', appLocalizations.elapsed, width: 76, end: true),
-      cell: (_, query) => RecordCellText('${query.delay} ms', muted: true),
-      sortKey: (query) => query.delay,
-      descendingFirst: true,
-    ),
-  ];
-}
+const dnsLookupTypes = [
+  'A',
+  'AAAA',
+  'CNAME',
+  'HTTPS',
+  'MX',
+  'TXT',
+  'NS',
+  'SRV',
+];
 
-class _DnsKeyword extends StatelessWidget {
-  final String label;
-  final RecordTone tone;
+class DnsLookupDialog extends StatefulWidget {
+  final Future<DnsQuery> Function(String domain, String type) onQuery;
 
-  const _DnsKeyword(this.label, {this.tone = RecordTone.neutral});
+  const DnsLookupDialog({super.key, required this.onQuery});
 
   @override
-  Widget build(BuildContext context) {
-    return RecordLabel(
-      label: label,
-      tone: tone,
-      onPressed: () => context.commonScaffoldState?.addKeyword(label),
-    );
+  State<DnsLookupDialog> createState() => _DnsLookupDialogState();
+}
+
+class _DnsLookupDialogState extends State<DnsLookupDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _domainController = TextEditingController();
+  String _type = dnsLookupTypes.first;
+  bool _querying = false;
+  String? _error;
+  DnsQuery? _result;
+
+  @override
+  void dispose() {
+    _domainController.dispose();
+    super.dispose();
   }
-}
 
-class _DnsResult extends StatelessWidget {
-  final DnsQuery dnsQuery;
-
-  const _DnsResult(this.dnsQuery);
+  Future<void> _submit() async {
+    if (_querying || !(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+    setState(() {
+      _querying = true;
+      _error = null;
+      _result = null;
+    });
+    try {
+      final dnsQuery = await widget.onQuery(
+        _domainController.text.trim(),
+        _type,
+      );
+      if (mounted) {
+        _result = dnsQuery;
+      }
+    } catch (error) {
+      if (mounted) {
+        _error = userFacingErrorMessage(error, context.appLocalizations);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _querying = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final summary = dnsQuery.summary;
-    return Row(
-      spacing: 6,
-      children: [
-        if (dnsQuery.cached) _DnsKeyword(context.appLocalizations.cache),
-        if (dnsQuery.hasFailureRcode)
-          _DnsKeyword(dnsQuery.rcode, tone: RecordTone.error),
-        if (summary.isNotEmpty)
-          Flexible(
-            child: Text(
-              summary,
-              style: TextStyle(
-                color: dnsQuery.isFailed
-                    ? context.colorScheme.error
-                    : context.colorScheme.onSurfaceVariant,
+    final appLocalizations = context.appLocalizations;
+    final error = _error;
+    final result = _result;
+    return CommonDialog(
+      title: appLocalizations.queryDns,
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(appLocalizations.close),
+        ),
+        _querying
+            ? TextButton.icon(
+                onPressed: null,
+                icon: const SizedBox.square(
+                  dimension: 18,
+                  child: CommonCircleLoading(),
+                ),
+                label: Text(appLocalizations.query),
+              )
+            : TextButton(
+                onPressed: _submit,
+                child: Text(appLocalizations.query),
               ),
-            ),
-          ),
       ],
-    );
-  }
-}
-
-class _DnsQueryTableRow extends StatelessWidget {
-  final DnsQuery dnsQuery;
-  final RecordTable<DnsQuery> table;
-  final bool striped;
-
-  const _DnsQueryTableRow({
-    required this.dnsQuery,
-    required this.table,
-    required this.striped,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return RecordTableRow(
-      table: table,
-      striped: striped,
-      onTap: () => _showDnsQueryDetail(context, dnsQuery),
-      cells: table.cellsOf(context, dnsQuery),
+      child: Form(
+        key: _formKey,
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            spacing: 16,
+            children: [
+              TextFormField(
+                autofocus: true,
+                enabled: !_querying,
+                controller: _domainController,
+                keyboardType: TextInputType.url,
+                inputFormatters: TextInputLimits.limit(TextInputLimits.domain),
+                onFieldSubmitted: (_) => _submit(),
+                decoration: InputDecoration(labelText: appLocalizations.domain),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return appLocalizations.emptyTip(appLocalizations.domain);
+                  }
+                  return null;
+                },
+              ),
+              FilledButton.tonal(
+                key: const ValueKey('dns-query-type'),
+                onPressed: _querying
+                    ? null
+                    : () async {
+                        final type = await dialogs.showCommonDialog<String>(
+                          filter: false,
+                          child: OptionsDialog<String>(
+                            title: appLocalizations.recordType,
+                            options: dnsLookupTypes,
+                            textBuilder: (item) => item,
+                            value: _type,
+                          ),
+                        );
+                        if (mounted && type != null) {
+                          setState(() => _type = type);
+                        }
+                      },
+                child: Text(_type),
+              ),
+              if (error != null)
+                Text(
+                  error,
+                  style: context.textTheme.bodyMedium?.copyWith(
+                    color: context.colorScheme.error,
+                  ),
+                ),
+              if (result != null) ...[
+                const Divider(),
+                for (final (label, value) in [
+                  (appLocalizations.domain, result.domain),
+                  (appLocalizations.recordType, result.type),
+                  (appLocalizations.answers, result.answers.join('\n')),
+                  (appLocalizations.responseCode, result.rcode),
+                  (appLocalizations.source, result.upstream),
+                  (
+                    appLocalizations.cache,
+                    result.cached ? appLocalizations.yes : appLocalizations.no,
+                  ),
+                  (appLocalizations.delay, '${result.delay} ms'),
+                  (appLocalizations.error, result.error),
+                ])
+                  if (value.isNotEmpty)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(label, style: context.textTheme.labelMedium),
+                        SelectableText(
+                          value,
+                          style: label == appLocalizations.error
+                              ? TextStyle(color: context.colorScheme.error)
+                              : null,
+                        ),
+                      ],
+                    ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
 
 class DnsQueryItem extends StatelessWidget {
   final DnsQuery dnsQuery;
-  final ValueChanged<String>? onClickKeyword;
+  final DnsQueryFilter filter;
+  final void Function(DnsQueryFilterType type, String value)? onClickFilter;
 
-  const DnsQueryItem({super.key, required this.dnsQuery, this.onClickKeyword});
+  const DnsQueryItem({
+    super.key,
+    required this.dnsQuery,
+    this.filter = const DnsQueryFilter(),
+    this.onClickFilter,
+  });
+
+  void _showDetail(BuildContext context) {
+    showDnsQueryDetail(
+      context,
+      dnsQuery: dnsQuery,
+      filter: filter,
+      onClickFilter: onClickFilter,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
     final styles = RecordTextStyles.of(context);
     final tone = dnsQuery.isFailed ? RecordTone.error : RecordTone.neutral;
-    final summary = dnsQuery.summary;
+    final summary = dnsQuery.error.isNotEmpty
+        ? dnsQuery.error
+        : dnsQuery.answers.join(', ');
+    final initiator = dnsQuery.initiator;
+    final type = Text(
+      dnsQuery.type,
+      style: const TextStyle(fontWeight: FontWeight.w500),
+    );
     return RecordListItem(
-      onTap: () => _showDnsQueryDetail(context, dnsQuery),
+      tone: tone,
+      onTap: () => _showDetail(context),
       header: RecordHeader(
         trailing: Text('${dnsQuery.delay} ms'),
-        children: [
-          RecordTimestamp(dnsQuery.time.showFull),
-          RecordLabel(
-            label: dnsQuery.type,
-            onPressed: () => onClickKeyword?.call(dnsQuery.type),
-          ),
-        ],
+        children: [RecordTimestamp(dnsQuery.time.toLocal().showFull), type],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         spacing: 4,
         children: [
-          Text(dnsQuery.domain, style: styles.title),
+          Text(
+            dnsQuery.domain,
+            style: styles.primary?.copyWith(fontWeight: FontWeight.w500),
+          ),
           if (summary.isNotEmpty)
             Text(
               summary,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: styles.secondary.copyWith(
+              style: styles.secondary?.copyWith(
                 color: tone.accentColor(context),
               ),
             ),
@@ -386,69 +558,184 @@ class DnsQueryItem extends StatelessWidget {
             runSpacing: 4,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              for (final tag in dnsQuery.resultTags)
+              if (initiator != null)
                 RecordLabel(
-                  label: tag,
-                  tone: dnsQuery.hasFailureRcode && tag == dnsQuery.rcode
-                      ? RecordTone.error
-                      : RecordTone.neutral,
-                  onPressed: () => onClickKeyword?.call(tag),
+                  label: initiator.label,
+                  onPressed: _filterTap(
+                    DnsQueryFilterType.initiator,
+                    initiator.name,
+                  ),
+                ),
+              if (dnsQuery.cached)
+                RecordLabel(
+                  label: appLocalizations.cache,
+                  tone: RecordTone.muted,
+                  onPressed: _filterTap(
+                    DnsQueryFilterType.cache,
+                    dnsQueryCacheFilterValue(true),
+                  ),
+                ),
+              if (dnsQuery.hasFailureRcode)
+                RecordLabel(
+                  label: dnsQuery.rcode,
+                  tone: RecordTone.error,
+                  onPressed: _filterTap(
+                    DnsQueryFilterType.rcode,
+                    dnsQuery.rcode,
+                  ),
                 ),
               if (dnsQuery.upstream.isNotEmpty)
-                Text(dnsQuery.upstream, style: styles.secondary),
+                GestureDetector(
+                  onTap: _filterTap(
+                    DnsQueryFilterType.upstream,
+                    dnsQuery.upstream,
+                  ),
+                  child: Text(dnsQuery.upstream, style: styles.muted),
+                ),
             ],
           ),
         ],
       ),
     );
   }
+
+  VoidCallback? _filterTap(DnsQueryFilterType type, String value) {
+    final onClickFilter = this.onClickFilter;
+    if (onClickFilter == null || value.isEmpty) {
+      return null;
+    }
+    return () => onClickFilter(type, value);
+  }
 }
 
-class DnsQueryDetailView extends StatelessWidget {
+class DnsQueryDetailView extends StatefulWidget {
   final DnsQuery dnsQuery;
+  final DnsQueryFilter filter;
+  final void Function(DnsQueryFilterType type, String value)? onClickFilter;
 
-  const DnsQueryDetailView({super.key, required this.dnsQuery});
+  const DnsQueryDetailView({
+    super.key,
+    required this.dnsQuery,
+    this.filter = const DnsQueryFilter(),
+    this.onClickFilter,
+  });
+
+  @override
+  State<DnsQueryDetailView> createState() => _DnsQueryDetailViewState();
+}
+
+class _DnsQueryDetailViewState extends State<DnsQueryDetailView> {
+  late DnsQueryFilter _filter;
+
+  DnsQuery get dnsQuery => widget.dnsQuery;
+
+  @override
+  void initState() {
+    super.initState();
+    _filter = widget.filter;
+  }
+
+  void _applyFilter(DnsQueryFilterType type, String value) {
+    widget.onClickFilter?.call(type, value);
+    setState(() {
+      _filter = _filter.toggle(type, value);
+    });
+  }
+
+  VoidCallback? _filterTap(DnsQueryFilterType type, String value) {
+    if (widget.onClickFilter == null || value.isEmpty) {
+      return null;
+    }
+    return () => _applyFilter(type, value);
+  }
+
+  List<Widget> _rows(
+    List<(String, String, DnsQueryFilterType?, String?, bool)> entries,
+  ) {
+    return [
+      for (final (title, value, filterType, filterValue, isError) in entries)
+        if (value.isNotEmpty)
+          _DnsDetailRow(
+            title: title,
+            value: value,
+            isError: isError,
+            filtered:
+                filterType != null &&
+                filterValue != null &&
+                _filter.contains(filterType, filterValue),
+            onFilter: filterType != null && filterValue != null
+                ? _filterTap(filterType, filterValue)
+                : null,
+          ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final appLocalizations = context.appLocalizations;
-    final entries = [
-      (appLocalizations.time, dnsQuery.time.showFull),
-      (appLocalizations.domain, dnsQuery.domain),
-      (appLocalizations.recordType, dnsQuery.type),
-      (appLocalizations.initiator, dnsQuery.initiator?.label ?? ''),
-      (appLocalizations.source, dnsQuery.upstream),
-      (
-        appLocalizations.cache,
-        dnsQuery.cached ? appLocalizations.yes : appLocalizations.no,
-      ),
-      (appLocalizations.responseCode, dnsQuery.rcode),
-      (appLocalizations.delay, '${dnsQuery.delay} ms'),
-    ];
+    final initiator = dnsQuery.initiator;
     return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-        bottom: 20 + context.bottomInset,
-        top: context.sectionsTopPadding,
-      ),
+      padding: sectionPagePadding.copyWith(top: context.sheetTopPadding),
       children: [
-        generateSection(
+        generateSectionV3(
           title: appLocalizations.basicInfo,
-          items: [
-            for (final (title, value) in entries)
-              if (value.isNotEmpty) DetailRow.text(title: title, value: value),
-          ],
+          isFirst: true,
+          items: _rows([
+            (appLocalizations.time, dnsQuery.time.showFull, null, null, false),
+            (appLocalizations.domain, dnsQuery.domain, null, null, false),
+            (
+              appLocalizations.recordType,
+              dnsQuery.type,
+              DnsQueryFilterType.type,
+              dnsQuery.type,
+              false,
+            ),
+            (
+              appLocalizations.initiator,
+              initiator?.label ?? '',
+              DnsQueryFilterType.initiator,
+              initiator?.name ?? '',
+              false,
+            ),
+            (
+              appLocalizations.source,
+              dnsQuery.upstream,
+              DnsQueryFilterType.upstream,
+              dnsQuery.upstream,
+              false,
+            ),
+            (
+              appLocalizations.cache,
+              dnsQuery.cached ? appLocalizations.yes : appLocalizations.no,
+              DnsQueryFilterType.cache,
+              dnsQueryCacheFilterValue(dnsQuery.cached),
+              false,
+            ),
+            (
+              appLocalizations.responseCode,
+              dnsQuery.rcode,
+              DnsQueryFilterType.rcode,
+              dnsQuery.rcode,
+              false,
+            ),
+            (appLocalizations.delay, '${dnsQuery.delay} ms', null, null, false),
+          ]),
         ),
         if (dnsQuery.error.isNotEmpty)
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.error,
-            items: [_ErrorRow(error: dnsQuery.error)],
+            items: _rows([(dnsQuery.error, dnsQuery.error, null, null, true)]),
           ),
         if (dnsQuery.answers.isNotEmpty)
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.answers,
             items: [
               for (final answer in dnsQuery.answers)
-                DetailRow(title: answer, copyText: answer),
+                DecorationListItem(
+                  onPressed: () => copyText(context, answer),
+                  minVerticalPadding: 14,
+                  title: Text(answer, style: context.textTheme.bodyMedium),
+                ),
             ],
           ),
       ],
@@ -456,28 +743,62 @@ class DnsQueryDetailView extends StatelessWidget {
   }
 }
 
-Future<void> _copy(BuildContext context, String text) async {
-  await Clipboard.setData(ClipboardData(text: text));
-  if (!context.mounted) return;
-  context.showNotifier(context.appLocalizations.copySuccess);
-}
+class _DnsDetailRow extends StatelessWidget {
+  final String title;
+  final String value;
+  final bool isError;
+  final bool filtered;
+  final VoidCallback? onFilter;
 
-class _ErrorRow extends StatelessWidget {
-  final String error;
-
-  const _ErrorRow({required this.error});
+  const _DnsDetailRow({
+    required this.title,
+    required this.value,
+    this.isError = false,
+    this.filtered = false,
+    this.onFilter,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final valueColor = isError
+        ? context.colorScheme.error
+        : context.colorScheme.onSurfaceVariant;
     return DecorationListItem(
-      onPressed: () => _copy(context, error),
+      onPressed: onFilter ?? () => copyText(context, value),
       minVerticalPadding: 14,
-      title: Text(
-        error,
-        style: AppTextStyle.subheadline
-            .of(context)
-            .copyWith(color: context.colorScheme.error),
-      ),
+      title: isError
+          ? Text(
+              value,
+              style: context.textTheme.bodyMedium?.copyWith(color: valueColor),
+            )
+          : Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 20,
+              children: [
+                Row(
+                  spacing: 4,
+                  children: [
+                    Text(title),
+                    if (onFilter != null)
+                      Icon(
+                        Symbols.filter_alt,
+                        size: 18,
+                        fill: filtered ? 1 : 0,
+                      ),
+                  ],
+                ),
+                Flexible(
+                  child: Text(
+                    value,
+                    textAlign: TextAlign.end,
+                    style: context.textTheme.bodyMedium?.copyWith(
+                      color: valueColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }

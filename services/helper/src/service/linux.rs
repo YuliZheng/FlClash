@@ -3,6 +3,10 @@ use crate::service::hub::{
 };
 
 use anyhow::{bail, Context, Result};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
+use hyper_util::server::graceful::GracefulShutdown;
+use hyper_util::service::TowerToHyperService;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::future::Future;
@@ -17,7 +21,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::Sleep;
-use tokio_stream::Stream;
+use tokio_stream::{Stream, StreamExt};
 
 const SERVICE_NAME: &str = "flclash-helper";
 const UNIT_PATH: &str = "/etc/systemd/system/flclash-helper.service";
@@ -176,25 +180,6 @@ fn unit_contents(executable: &Path, owner: Owner) -> String {
     )
 }
 
-/// The unit runs this binary as root at every boot, so one the invoking user
-/// could overwrite would turn a single polkit approval into standing root.
-fn ensure_root_owned(executable: &Path) -> Result<()> {
-    let directory = executable
-        .parent()
-        .context("helper executable has no parent directory")?;
-    for path in [executable, directory] {
-        let metadata = fs::metadata(path).with_context(|| format!("inspect {}", path.display()))?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            bail!(
-                "{} must be owned by root and not writable by group or others to run as a service; \
-                 install the package instead of running an unpacked bundle",
-                path.display()
-            );
-        }
-    }
-    Ok(())
-}
-
 fn installed_owner_uid(unit: &str) -> Option<u32> {
     let prefix = format!("Environment={OWNER_UID_ENV}=");
     unit.lines()
@@ -219,7 +204,6 @@ fn ensure_unit_is_free_for(owner: Owner) -> Result<()> {
 
 fn install_service() -> Result<()> {
     let executable = std::env::current_exe().context("resolve helper executable path")?;
-    ensure_root_owned(&executable)?;
     let owner = invoking_owner()?;
     ensure_unit_is_free_for(owner)?;
 
@@ -277,10 +261,30 @@ fn run_service() -> Result<()> {
                 _ = interrupt.recv() => {}
             }
         };
-        let incoming = AuthorizedIncoming::bind(owner)?;
-        warp::serve(routes())
-            .serve_incoming_with_graceful_shutdown(incoming, shutdown)
-            .await;
+        let mut incoming = AuthorizedIncoming::bind(owner)?;
+        let graceful = GracefulShutdown::new();
+        tokio::pin!(shutdown);
+        loop {
+            let stream = tokio::select! {
+                _ = &mut shutdown => break,
+                stream = incoming.next() => match stream {
+                    Some(stream) => stream.context("accept helper connection")?,
+                    None => break,
+                },
+            };
+            let service = TowerToHyperService::new(warp::service(routes()));
+            let watcher = graceful.watcher();
+            tokio::spawn(async move {
+                let builder = ConnectionBuilder::new(TokioExecutor::new());
+                let connection =
+                    builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
+                if let Err(error) = watcher.watch(connection).await {
+                    log_message(format!("Helper connection failed: {error}"));
+                }
+            });
+        }
+        drop(incoming);
+        graceful.shutdown().await;
         release_managed_core_on_shutdown();
         Ok(())
     })
@@ -319,8 +323,6 @@ fn is_authorized_peer(stream: &UnixStream, owner: Owner) -> bool {
 impl Stream for AuthorizedIncoming {
     type Item = Result<UnixStream, Error>;
 
-    /// hyper ends the whole server on the first accept error it is handed, so
-    /// resource exhaustion is logged and retried after a pause instead.
     fn poll_next(
         mut self: Pin<&mut Self>,
         context: &mut TaskContext<'_>,

@@ -4,31 +4,10 @@ import 'dart:convert';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/event.dart';
 import 'package:fl_clash/core/method.dart';
-import 'package:fl_clash/core/spill.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-
-final _utf8JsonDecoder = utf8.decoder.fuse(json.decoder);
-
-Object? _decodeUtf8Json(Uint8List data) => _utf8JsonDecoder.convert(data);
-
-Map<String, Object?> _decodeResponseOf((Uint8List, CoreMethod) request) {
-  final (data, method) = request;
-  final decoded = _decodeUtf8Json(data);
-  return withResultModel(method, Map<String, Object?>.from(decoded as Map));
-}
-
-Future<Map<String, Object?>> _decodeResponse(
-  Uint8List data,
-  CoreMethod method,
-) async {
-  if (data.length < 51200) {
-    return _decodeResponseOf((data, method));
-  }
-  return compute(_decodeResponseOf, (data, method));
-}
 
 abstract mixin class ServiceListener {
   void onServiceEvent(CoreEvent event) {}
@@ -36,10 +15,14 @@ abstract mixin class ServiceListener {
   void onServiceStopped() {}
 }
 
+enum TunnelState { pending, connected, disconnected }
+
 class Service {
   static Service? _instance;
   late MethodChannel methodChannel;
-  static const _coreChannel = MethodChannel('$packageName/core');
+  final _tunnelState = ValueNotifier(TunnelState.pending);
+
+  ValueListenable<TunnelState> get tunnelState => _tunnelState;
 
   final ObserverList<ServiceListener> _listeners =
       ObserverList<ServiceListener>();
@@ -56,11 +39,15 @@ class Service {
     methodChannel = const MethodChannel('$packageName/service');
     methodChannel.setMethodCallHandler((call) async {
       switch (call.method) {
+        case 'tunnelState':
+          _tunnelState.value = TunnelState.values.byName(
+            call.arguments as String,
+          );
+          break;
         case 'event':
+          final data = call.arguments as String? ?? '';
           final methodCall = CoreMethodCall.fromJson(
-            Map<String, Object?>.from(
-              _decodeUtf8Json(call.arguments as Uint8List) as Map,
-            ),
+            Map<String, Object?>.from(json.decode(data) as Map),
           );
           for (final event in coreEventsFromData(methodCall.arguments)) {
             _dispatch(
@@ -70,7 +57,7 @@ class Service {
           }
           break;
         case 'stopped':
-          // A report stamped before the newest command no longer describes it.
+          // Native's received-command count; an older report is stale.
           if (call.arguments != _commandRevision || !_startRequested) {
             break;
           }
@@ -84,17 +71,15 @@ class Service {
   }
 
   Future<CoreMethodResponse?> invokeMethod(CoreMethodCall call) async {
-    final data = await _coreChannel.invokeMethod<Uint8List>(
+    final data = await methodChannel.invokeMethod<String>(
       'invokeMethod',
       json.encode(call),
     );
     if (data == null) {
       return null;
     }
-    return resolveSpilledResponse(
-      CoreMethodResponse.fromJson(await _decodeResponse(data, call.method)),
-      method: call.method,
-    );
+    final dataJson = await data.decodeJson<dynamic>();
+    return CoreMethodResponse.fromJson(dataJson);
   }
 
   void _dispatch(String label, void Function(ServiceListener) deliver) {
@@ -103,26 +88,23 @@ class Service {
         deliver(listener);
       } catch (error) {
         commonPrint.log(
-          'Unable to dispatch Android $label: $error',
+          'Unable to dispatch $label: $error',
           logLevel: LogLevel.error,
         );
       }
     }
   }
 
-  Future<bool> start() async {
+  Future<bool?> start(SharedState state) async {
     _startRequested = true;
-    return await methodChannel.invokeMethod<bool>(
-          'start',
-          ++_commandRevision,
-        ) ??
-        false;
+    _commandRevision++;
+    return methodChannel.invokeMethod<bool>('start', json.encode(state));
   }
 
-  Future<bool> stop() async {
+  Future<bool?> stop() async {
     _startRequested = false;
-    return await methodChannel.invokeMethod<bool>('stop', ++_commandRevision) ??
-        false;
+    _commandRevision++;
+    return methodChannel.invokeMethod<bool>('stop');
   }
 
   Future<String> init() async {
@@ -149,6 +131,16 @@ class Service {
     return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 
+  Future<VpnOptions?> getActiveVpnOptions() async {
+    final data = await methodChannel.invokeMethod<String>(
+      'getActiveVpnOptions',
+    );
+    if (data == null) return null;
+    return VpnOptions.fromJson(
+      Map<String, Object?>.from(json.decode(data) as Map),
+    );
+  }
+
   bool get hasListeners {
     return _listeners.isNotEmpty;
   }
@@ -162,4 +154,4 @@ class Service {
   }
 }
 
-Service? get service => system.isAndroid ? Service() : null;
+Service? get service => system.isAndroid || system.isIOS ? Service() : null;

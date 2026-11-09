@@ -16,13 +16,6 @@ const _coreSha256 =
     '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 void main() {
-  test('reads the port from the key the Windows service publishes it in', () {
-    final peer = File('services/helper/src/service/peer.rs').readAsStringSync();
-
-    expect(peer, contains('const PORT_KEY: &str = r"$helperPortKey";'));
-    expect(peer, contains('const PORT_VALUE: &str = "$helperPortValue";'));
-  });
-
   test(
     'start returns a Helper lease identity with matching session and PID',
     () async {
@@ -720,6 +713,7 @@ HelperClient _client(
   final dio = Dio()..httpClientAdapter = adapter;
   return HelperClient(
     dio: dio,
+    baseUrl: 'http://$localhost:$helperPort',
     expectedHelperPath: expectedHelperPath ?? () => r'C:\Helper.exe',
     readCoreSha256: readCoreSha256 ?? () async => _coreSha256,
   );

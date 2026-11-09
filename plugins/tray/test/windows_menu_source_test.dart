@@ -25,17 +25,14 @@ void main() {
   late String pluginSource;
 
   setUpAll(() {
-    pluginSource = _resolveSource('windows/tray_plugin.cpp').readAsStringSync();
+    pluginSource = _resolveSource(
+      'windows/tray_plugin.cpp',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
   });
 
   test('windows menu clicks come from TrackPopupMenu, not WM_COMMAND', () {
     expect(pluginSource, contains('TPM_RETURNCMD'));
     expect(pluginSource, isNot(contains('WM_COMMAND')));
-  });
-
-  test('windows puts the detail in the accelerator column', () {
-    expect(pluginSource, contains('StringAt(*entry, "detail")'));
-    expect(pluginSource, contains("text += L'\\t';"));
   });
 
   test('windows show reports a failed icon load', () {
@@ -49,24 +46,82 @@ void main() {
   });
 
   test('windows rejected show leaves the visible menu untouched', () {
-    final show = _body(pluginSource, 'bool TrayPlugin::Show(');
-    final lastRejection = show.lastIndexOf('return false;');
-    final rebuild = show.indexOf('RebuildMenu(menu_, *items);');
-
-    expect(lastRejection, isNonNegative);
-    expect(rebuild, greaterThan(lastRejection));
+    expect(pluginSource, contains('bool applied = ApplyIcon(!visible_);'));
+    expect(
+      pluginSource,
+      contains('''
+  if (!applied && !can_retry) {
+    icon_data_.hIcon = previous_icon;'''),
+    );
+    expect(
+      pluginSource.indexOf('visible_ = true;'),
+      lessThan(pluginSource.indexOf('SetMenu(*items)')),
+      reason: 'the visible menu may only change after native icon acceptance',
+    );
   });
 
+  test('windows validates and applies batch menu updates', () {
+    expect(pluginSource, contains('bool TrayPlugin::UpdateMenuItems'));
+    expect(pluginSource, contains('method == "updateMenuItems"'));
+    expect(pluginSource, contains('ListAt(*arguments, "updates")'));
+    expect(
+      pluginSource.indexOf('menu_entries_.find(*key) == menu_entries_.end()'),
+      lessThan(pluginSource.indexOf('if (!ApplyMenuItemUpdate(update))')),
+    );
+    expect(pluginSource, isNot(contains('method == "updateMenuItem"')));
+  });
+
+  test('windows can make the Flutter window own the popup menu', () {
+    expect(pluginSource, contains('BoolAt(*arguments, "bringAppToFront"'));
+    expect(
+      pluginSource,
+      contains('''
+  if (bring_app_to_front) {
+    if (registrar_ != nullptr && registrar_->GetView() != nullptr) {
+      window = ::GetAncestor(registrar_->GetView()->GetNativeWindow(), GA_ROOT);
+    }
+  } else if (tray_window_ != nullptr) {
+    window = tray_window_->hwnd();
+  }'''),
+    );
+    expect(
+      pluginSource,
+      contains('''
+  if (window == nullptr) {
+    return false;
+  }'''),
+      reason: 'the hidden owner remains the default path',
+    );
+  });
+
+  test('windows preserves the old icon when native apply fails', () {
+    expect(pluginSource, contains('const HICON previous_icon'));
+    expect(
+      pluginSource,
+      contains('''
+    icon_data_.hIcon = previous_icon;
+    tool_tip_ = previous_tool_tip;
+    menu_is_dark_ = previous_menu_is_dark;
+    icon_requested_ = visible_;
+    ::DestroyIcon(loaded);
+    return false;'''),
+    );
+  });
   test('windows retries an icon the shell refused at sign-in', () {
     final show = _body(pluginSource, 'bool TrayPlugin::Show(');
 
     expect(show, contains('ScheduleRestore();'));
     expect(show.trimRight(), endsWith('return true;'));
     expect(
-      _body(pluginSource, 'void TrayPlugin::RestoreIcon('),
-      contains('ApplyIcon(false) || ApplyIcon(true)'),
+      show,
+      contains('!visible_ && tray_window_ != nullptr'),
+      reason: 'a show with no tray window to retry from must report failure',
     );
+    final restore = _body(pluginSource, 'void TrayPlugin::RestoreIcon(');
+    expect(restore, contains('ApplyIcon(false) || ApplyIcon(true)'));
+    expect(restore, contains('++restore_attempts_ < kMaxRestoreAttempts'));
     expect(pluginSource, contains('message == WM_TIMER'));
+    expect(pluginSource, contains('should_restore && icon_requested_'));
   });
 
   test('windows hide deletes an icon whose add may have landed', () {

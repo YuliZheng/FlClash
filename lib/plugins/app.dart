@@ -1,21 +1,17 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
-const _platformProbeTimeout = Duration(seconds: 2);
-
 class App {
   static App? _instance;
   late MethodChannel methodChannel;
   Function()? onExit;
   Function()? onPackagesChanged;
-  final floatingKeyboard = ValueNotifier(false);
 
   App._internal() {
     methodChannel = const MethodChannel('$packageName/app');
@@ -27,8 +23,6 @@ class App {
           }
         case 'packagesChanged':
           onPackagesChanged?.call();
-        case 'floatingImeChanged':
-          floatingKeyboard.value = call.arguments as bool;
         default:
           throw MissingPluginException();
       }
@@ -67,15 +61,6 @@ class App {
         false;
   }
 
-  /// Android 17 drops traffic between the app and the local network until the
-  /// user grants this; earlier versions answer true.
-  Future<bool> requestLocalNetworkPermission() async {
-    return await methodChannel.invokeMethod<bool>(
-          'requestLocalNetworkPermission',
-        ) ??
-        false;
-  }
-
   Future<List<String>> getChinaPackageNames() async {
     final packageNamesString = await methodChannel.invokeMethod<String>(
       'getChinaPackageNames',
@@ -85,9 +70,37 @@ class App {
     return packageNamesRaw.map((e) => e.toString()).toList();
   }
 
+  Future<bool?> requestNotificationsPermission() async {
+    return methodChannel.invokeMethod<bool>('requestNotificationsPermission');
+  }
+
+  Future<ApkInstallStatus> installApk(String path) async {
+    try {
+      final status = await methodChannel.invokeMethod<String>('installApk', {
+        'path': path,
+      });
+      return ApkInstallStatus.values.asNameMap()[status] ??
+          ApkInstallStatus.failed;
+    } on PlatformException catch (error) {
+      commonPrint.log(
+        'installApk failed: ${error.message}',
+        logLevel: LogLevel.warning,
+      );
+      return ApkInstallStatus.failed;
+    }
+  }
+
+  Future<bool> openFile(String path) async {
+    return await methodChannel.invokeMethod<bool>('openFile', {'path': path}) ??
+        false;
+  }
+
   final Map<String, ImageProvider?> _packageIcons = {};
   final Map<String, Future<ImageProvider?>> _packageIconTasks = {};
-  final TaskPool _packageIconPool = TaskPool(maxConcurrentIconLoads);
+
+  bool hasPackageIcon(String packageName) {
+    return _packageIcons.containsKey(packageName);
+  }
 
   ImageProvider? getCachedPackageIcon(String packageName) {
     return _packageIcons[packageName];
@@ -112,11 +125,9 @@ class App {
 
   Future<ImageProvider?> _requestPackageIcon(String packageName) async {
     try {
-      final path = await _packageIconPool.run(
-        () => methodChannel.invokeMethod<String>('getPackageIcon', {
-          'packageName': packageName,
-        }),
-      );
+      final path = await methodChannel.invokeMethod<String>('getPackageIcon', {
+        'packageName': packageName,
+      });
       if (path == null || path.isEmpty) {
         return null;
       }
@@ -154,21 +165,6 @@ class App {
   Future<bool?> openAppSettings() async {
     if (!Platform.isAndroid) return false;
     return methodChannel.invokeMethod<bool>('openAppSettings');
-  }
-
-  Future<AppExitInfo?> getLastExitInfo() async {
-    try {
-      final raw = await methodChannel
-          .invokeMapMethod<String, Object?>('getLastExitInfo')
-          .timeout(_platformProbeTimeout);
-      return AppExitInfo.fromJson(raw);
-    } catch (error) {
-      commonPrint.log(
-        'Failed to read the last process exit info: ${compactError(error)}',
-        logLevel: LogLevel.warning,
-      );
-      return null;
-    }
   }
 }
 

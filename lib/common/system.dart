@@ -3,24 +3,29 @@ import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:ffi/ffi.dart';
-import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/common/system_dns.dart';
 import 'package:fl_clash/core/desktop/helper_client.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
+import 'package:xml/xml.dart';
 
 typedef ProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
 
 class System {
   static System? _instance;
-  bool _isTV = false;
+  static final _getEffectiveUid = DynamicLibrary.process()
+      .lookupFunction<Uint32 Function(), int Function()>('geteuid');
+  bool _deviceIsTV = false;
 
   @visibleForTesting
   ProcessRunner runProcess = Process.run;
+
+  @visibleForTesting
+  int Function() readEffectiveUid = () => _getEffectiveUid();
 
   System._internal();
 
@@ -37,13 +42,22 @@ class System {
 
   bool get isAndroid => Platform.isAndroid;
 
+  bool get isIOS => Platform.isIOS;
+
+  bool get isMobile => isAndroid || isIOS;
+
   bool get isLinux => Platform.isLinux;
 
-  bool get isTV => _isTV;
+  bool get isRunningAsRoot => (isLinux || isMacOS) && readEffectiveUid() == 0;
+
+  bool get isTV => _deviceIsTV;
+
+  @visibleForTesting
+  set isTV(bool value) => _deviceIsTV = value;
 
   Future<int> init() async {
     final deviceInfo = await DeviceInfoPlugin().deviceInfo;
-    _isTV = switch (deviceInfo) {
+    _deviceIsTV = switch (deviceInfo) {
       AndroidDeviceInfo(:final systemFeatures) => systemFeatures.any(
         const {
           'android.hardware.type.television',
@@ -56,14 +70,16 @@ class System {
       'macos' => (deviceInfo as MacOsDeviceInfo).majorVersion,
       'android' => (deviceInfo as AndroidDeviceInfo).version.sdkInt,
       'windows' => (deviceInfo as WindowsDeviceInfo).majorVersion,
+      'ios' =>
+        int.tryParse(
+              (deviceInfo as IosDeviceInfo).systemVersion.split('.').first,
+            ) ??
+            0,
       String() => 0,
     };
   }
 
-  Future<AppExitInfo?> lastExitInfo() async {
-    if (!isAndroid) return null;
-    return app?.getLastExitInfo();
-  }
+  bool supportsPredictiveBack(int version) => isAndroid && version >= 33;
 
   /// [corePath] is handed to `Process.run` as an argv entry, so it must stay
   /// verbatim. Shell-quoting or escaping it here reaches `stat` as part of the
@@ -75,49 +91,13 @@ class System {
         : ['-c', '%U:%G %A', corePath];
   }
 
-  /// Execute for others fails it, so an older `+sx` Core is re-authorized.
   @visibleForTesting
   static bool isPrivilegedStatOutput(
     String output, {
     required String ownerPrefix,
   }) {
     final trimmed = output.trim();
-    if (!trimmed.startsWith(ownerPrefix)) {
-      return false;
-    }
-    final mode = trimmed.split(RegExp(r'\s+')).last;
-    return mode.length >= 10 &&
-        mode[3] == 's' &&
-        mode[9] != 'x' &&
-        mode[9] != 't';
-  }
-
-  @visibleForTesting
-  static String macOSElevationShell(String corePath) {
-    final path = _shellEscape(corePath);
-    return 'chown root:admin $path && chmod 4750 $path';
-  }
-
-  @visibleForTesting
-  static String linuxElevationShell(String corePath) {
-    final path = _shellEscape(corePath);
-    return 'group=\$(id -g "\${PKEXEC_UID:-\$SUDO_UID}") && '
-        'chown "root:\$group" $path && '
-        'chmod 4750 $path';
-  }
-
-  Future<bool> _isInAdminGroup() async {
-    try {
-      final result = await runProcess('id', ['-Gn']);
-      return result.exitCode == 0 &&
-          result.stdout
-              .toString()
-              .trim()
-              .split(RegExp(r'\s+'))
-              .contains('admin');
-    } on ProcessException {
-      return false;
-    }
+    return trimmed.startsWith(ownerPrefix) && trimmed.contains('rws');
   }
 
   /// A read-only nosuid mount at a path that changes every run: no elevation sticks.
@@ -127,9 +107,12 @@ class System {
   late final bool _hasSystemd = Directory('/run/systemd/system').existsSync();
 
   bool get hasHelperService =>
-      isWindows || (isLinux && !isAppImage && _hasSystemd);
+      isWindows || (isLinux && !isRunningAsRoot && !isAppImage && _hasSystemd);
 
   Future<bool> checkIsAdmin() async {
+    if (isRunningAsRoot) {
+      return true;
+    }
     if (hasHelperService) {
       return await helperClient.readiness() == HelperReadiness.ready;
     }
@@ -202,8 +185,11 @@ class System {
   }
 
   Future<AuthorizeCode> authorizeCore() async {
-    if (system.isAndroid) {
+    if (system.isMobile) {
       return AuthorizeCode.error;
+    }
+    if (isRunningAsRoot) {
+      return AuthorizeCode.none;
     }
     if (system.isWindows) {
       return await windows?.registerService() ?? AuthorizeCode.error;
@@ -225,15 +211,8 @@ class System {
     }
 
     if (system.isMacOS) {
-      if (!await _isInAdminGroup()) {
-        commonPrint.log(
-          'TUN needs an administrator account: only the admin group may run '
-          'the elevated Core',
-          logLevel: LogLevel.error,
-        );
-        return AuthorizeCode.error;
-      }
-      final shell = macOSElevationShell(appPath.corePath);
+      final escapedPath = _shellEscape(appPath.corePath);
+      final shell = 'chown root:admin $escapedPath && chmod +sx $escapedPath';
       final arguments = [
         '-e',
         'do shell script "$shell" with administrator privileges',
@@ -244,10 +223,11 @@ class System {
       }
       return AuthorizeCode.success;
     } else if (system.isLinux) {
+      final escapedCorePath = _shellEscape(appPath.corePath);
       final elevated = await linuxElevation.elevate([
         '/bin/sh',
         '-c',
-        linuxElevationShell(appPath.corePath),
+        'chown root:root $escapedCorePath && chmod +sx $escapedCorePath',
       ]);
       return elevated ? AuthorizeCode.success : AuthorizeCode.error;
     }
@@ -256,12 +236,14 @@ class System {
 
   Future<void> back() async {
     await app?.moveTaskToBack();
+    await windowPort?.hide();
   }
 
   Future<void> exit() async {
-    if (system.isAndroid) {
+    if (system.isMobile) {
       await SystemNavigator.pop();
     }
+    windowPort?.forceExit();
   }
 }
 
@@ -269,8 +251,6 @@ final system = System();
 
 class Windows {
   static Windows? _instance;
-  static const _swHide = 0;
-  static const _swShowNormal = 1;
   late DynamicLibrary _shell32;
 
   Windows._internal() {
@@ -282,7 +262,7 @@ class Windows {
     return _instance!;
   }
 
-  bool runas(String command, String arguments, {bool showWindow = true}) {
+  bool runas(String command, String arguments) {
     final commandPtr = command.toNativeUtf16();
     final argumentsPtr = arguments.toNativeUtf16();
     final operationPtr = 'runas'.toNativeUtf16();
@@ -313,7 +293,7 @@ class Windows {
       commandPtr,
       argumentsPtr,
       nullptr,
-      showWindow ? _swShowNormal : _swHide,
+      1,
     );
 
     calloc.free(commandPtr);
@@ -331,16 +311,62 @@ class Windows {
     return true;
   }
 
-  /// The installer may be another administrator, so this process names the owner.
-  @visibleForTesting
-  static String installArguments(int ownerPid) =>
-      'install --owner-pid $ownerPid';
-
   Future<AuthorizeCode> registerService() {
     return registerHelperService(
-      () async =>
-          runas(appPath.helperPath, installArguments(pid), showWindow: false),
+      () async => runas(appPath.helperPath, 'install'),
     );
+  }
+
+  Future<bool> isTaskRegistered(String appName) async {
+    final result = await Process.run('schtasks.exe', [
+      '/Query',
+      '/TN',
+      appName,
+    ]);
+    return result.exitCode == 0 && result.stdout.toString().contains(appName);
+  }
+
+  Future<bool> unregisterTask(String appName) async {
+    if (!await isTaskRegistered(appName)) {
+      return true;
+    }
+    final result = await Process.run('schtasks.exe', [
+      '/Delete',
+      '/TN',
+      appName,
+      '/F',
+    ]);
+    return result.exitCode == 0;
+  }
+
+  Future<bool> registerTask(String appName) async {
+    final executable = XmlText(Platform.resolvedExecutable).toXmlString();
+    final taskXml =
+        '''
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType></Principal></Principals>
+  <Triggers><LogonTrigger><Delay>PT0S</Delay></LogonTrigger></Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>$executable</Command></Exec></Actions>
+</Task>''';
+    final taskPath = path.join(await appPath.tempPath, 'task.xml');
+    await File(
+      taskPath,
+    ).writeAsBytes(taskXml.encodeUtf16LeWithBom, flush: true);
+    final arguments = ['/Create', '/TN', appName, '/XML', taskPath, '/F'];
+    final result = await Process.run('schtasks.exe', arguments);
+    return result.exitCode == 0 || runas('schtasks.exe', arguments.join(' '));
   }
 }
 
@@ -436,127 +462,3 @@ class Linux {
 }
 
 final linux = system.isLinux && system.hasHelperService ? Linux() : null;
-
-class MacOS implements SystemDnsPort {
-  static MacOS? _instance;
-
-  @visibleForTesting
-  ProcessRunner runProcess = Process.run;
-
-  MacOS._internal();
-
-  factory MacOS() {
-    _instance ??= MacOS._internal();
-    return _instance!;
-  }
-
-  @visibleForTesting
-  static String? parseDefaultInterface(String routeOutput) {
-    final deviceLine = routeOutput
-        .split('\n')
-        .firstWhere((s) => s.contains('interface:'), orElse: () => '');
-    final lineSplits = deviceLine.trim().split(' ');
-    if (lineSplits.length != 2) {
-      return null;
-    }
-    return lineSplits[1];
-  }
-
-  @visibleForTesting
-  static String? parseServiceName(String serviceOrderOutput, String device) {
-    final currentService = serviceOrderOutput
-        .split('\n\n')
-        .firstWhere((s) => s.contains('Device: $device'), orElse: () => '');
-    if (currentService.isEmpty) {
-      return null;
-    }
-    final nameLine = currentService
-        .split('\n')
-        .firstWhere(
-          (line) => RegExp(r'^\(\d+\).*').hasMatch(line),
-          orElse: () => '',
-        );
-    final name = RegExp(
-      r'^\(\d+\)\s+(.+)$',
-    ).firstMatch(nameLine.trim())?.group(1)?.trim();
-    if (name == null || name.isEmpty) {
-      return null;
-    }
-    return name;
-  }
-
-  @visibleForTesting
-  static List<String> parseDnsServers(String getDnsServersOutput) {
-    final output = getDnsServersOutput.trim();
-    if (output.startsWith("There aren't any DNS Servers set on")) {
-      return [];
-    }
-    return output.split('\n');
-  }
-
-  @override
-  Future<String?> resolveDefaultService() async {
-    final result = await _run('route', ['-n', 'get', 'default']);
-    if (result == null) {
-      return null;
-    }
-    final device = parseDefaultInterface(result.stdout.toString());
-    if (device == null) {
-      return null;
-    }
-    final serviceResult = await _run('networksetup', [
-      '-listnetworkserviceorder',
-    ]);
-    if (serviceResult == null) {
-      return null;
-    }
-    return parseServiceName(serviceResult.stdout.toString(), device);
-  }
-
-  @override
-  Future<List<String>?> readDnsServers(String service) async {
-    final result = await _run('networksetup', ['-getdnsservers', service]);
-    if (result == null) {
-      return null;
-    }
-    return parseDnsServers(result.stdout.toString());
-  }
-
-  @override
-  Future<bool> writeDnsServers(String service, List<String> servers) async {
-    final result = await _run('networksetup', [
-      '-setdnsservers',
-      service,
-      if (servers.isEmpty) 'Empty',
-      if (servers.isNotEmpty) ...servers,
-    ], logLevel: LogLevel.error);
-    return result != null;
-  }
-
-  Future<ProcessResult?> _run(
-    String executable,
-    List<String> arguments, {
-    LogLevel logLevel = LogLevel.warning,
-  }) async {
-    final label = '$executable ${arguments.first}';
-    try {
-      final result = await runProcess(executable, arguments);
-      if (result.exitCode != 0) {
-        commonPrint.log(
-          '$label exited with ${result.exitCode}: ${result.stderr.toString().trim()}',
-          logLevel: logLevel,
-        );
-        return null;
-      }
-      return result;
-    } catch (error) {
-      commonPrint.log(
-        '$label failed: ${compactError(error)}',
-        logLevel: logLevel,
-      );
-      return null;
-    }
-  }
-}
-
-final macOS = system.isMacOS ? MacOS() : null;

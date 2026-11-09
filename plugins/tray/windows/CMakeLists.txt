@@ -8,6 +8,12 @@ set(PLUGIN_NAME "tray_plugin")
 list(APPEND PLUGIN_SOURCES
   "tray_plugin.cpp"
   "tray_plugin.h"
+  "tray_menu_session.cpp"
+  "tray_menu_session.h"
+  "tray_window.cpp"
+  "tray_window.h"
+  "tray_menu_icons.cpp"
+  "tray_menu_icons.h"
 )
 
 add_library(${PLUGIN_NAME} SHARED
@@ -24,7 +30,7 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
 
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin gdi32 comctl32)
 
 set(tray_bundled_libraries
   ""

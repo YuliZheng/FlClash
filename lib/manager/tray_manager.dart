@@ -1,12 +1,14 @@
 import 'dart:async';
 
-import 'package:collection/collection.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/common/tray.dart';
 import 'package:fl_clash/common/window.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
+import 'package:fl_clash/providers/config.dart';
+import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/providers/state.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,8 +16,15 @@ import 'package:tray/tray.dart';
 
 class TrayManager extends ConsumerStatefulWidget {
   final Widget child;
+  final bool? isMacOS;
+  final Future<void> Function()? openMenu;
 
-  const TrayManager({super.key, required this.child});
+  const TrayManager({
+    super.key,
+    required this.child,
+    this.isMacOS,
+    this.openMenu,
+  });
 
   @override
   ConsumerState<TrayManager> createState() => _TrayManagerState();
@@ -23,63 +32,60 @@ class TrayManager extends ConsumerStatefulWidget {
 
 class _TrayManagerState extends ConsumerState<TrayManager> {
   StreamSubscription<TrayEvent>? _subscription;
-  bool _isUpdating = false;
-  bool _hasPendingUpdate = false;
+
+  bool get _isMacOS => widget.isMacOS ?? system.isMacOS;
 
   @override
   void initState() {
     super.initState();
     _subscription = Tray.instance.events.listen(_handleTrayEvent);
+    ref.listenManual(profilesProvider, (prev, next) {
+      _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
+    });
+    ref.listenManual(currentProfileIdProvider, (prev, next) {
+      _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
+    });
+    ref.listenManual(updatingKeysProvider, (prev, next) {
+      _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
+    });
     ref.listenManual(trayStateProvider, (prev, next) {
       if (prev != next) {
-        _requestUpdate();
+        _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
+      }
+    });
+    ref.listenManual(currentBrightnessProvider, (prev, next) {
+      if (prev != next) {
+        _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
       }
     });
     ref.listenManual(loadedLocaleProvider, (prev, next) {
       if (prev != null && prev != next) {
-        _requestUpdate();
+        _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
       }
     });
-    if (system.isMacOS) {
-      ref.listenManual(trayDelaysProvider, (prev, next) {
-        if (!const DeepCollectionEquality().equals(prev, next)) {
-          _requestUpdate();
-        }
-      });
-      ref.listenManual(trayTitleStateProvider, (prev, next) {
-        if (prev != next) {
-          _reportFailure(
-            appTray?.updateTitle(
-              showTrayTitle: next.showTrayTitle,
-              traffic: next.traffic,
-            ),
-          );
-        }
-      });
-    }
-  }
-
-  /// A delay test changes the menu per proxy, so updates in flight coalesce.
-  void _requestUpdate() {
-    if (_isUpdating) {
-      _hasPendingUpdate = true;
-      return;
-    }
-    _isUpdating = true;
-    _reportFailure(_drainUpdates());
-  }
-
-  Future<void> _drainUpdates() async {
-    try {
-      do {
-        _hasPendingUpdate = false;
-        await ref.read(systemActionProvider.notifier).updateTray();
-      } while (_hasPendingUpdate && mounted);
-    } finally {
-      _isUpdating = false;
-      if (_hasPendingUpdate && mounted) {
-        _requestUpdate();
+    ref.listenManual(hotKeyActionsProvider, (prev, next) {
+      if (!hotKeyActionListEquality.equals(prev, next)) {
+        _reportFailure(ref.read(systemActionProvider.notifier).updateTray());
       }
+    });
+    if (_isMacOS) {
+      ref.listenManual(
+        trafficsProvider.select(
+          (state) => state.list.safeLast(const Traffic()),
+        ),
+        (prev, next) {
+          if (prev != next) {
+            final trayState = ref.read(trayStateProvider);
+            _reportFailure(
+              appTray?.updateTitle(
+                showNetworkSpeed: trayState.showNetworkSpeed,
+                isStart: trayState.isStart,
+                traffic: next,
+              ),
+            );
+          }
+        },
+      );
     }
   }
 
@@ -100,12 +106,25 @@ class _TrayManagerState extends ConsumerState<TrayManager> {
   void _handleTrayEvent(TrayEvent event) {
     switch (event) {
       case TrayIconActivated():
-        window?.show();
+        if (_isMacOS) {
+          _openMenu();
+        } else {
+          _reportFailure(
+            window?.show(
+              activationTimestamp: event.activationTimestamp,
+              activationToken: event.activationToken,
+            ),
+          );
+        }
       case TrayMenuRequested():
-        _reportFailure(Tray.instance.openMenu());
+        _openMenu();
       case TrayMenuItemSelected():
         break;
     }
+  }
+
+  void _openMenu() {
+    _reportFailure(widget.openMenu?.call() ?? Tray.instance.openMenu());
   }
 
   @override

@@ -1,6 +1,6 @@
-package com.follow.clash.models
+package cc.chenx.flclash.models
 
-import com.follow.clash.common.AccessControlMode
+import cc.chenx.flclash.common.AccessControlMode
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -17,13 +17,12 @@ class SharedStateTest {
 
     @Test
     fun `setup params use the kebab-case spelling Flutter writes`() {
-        val json = """{"test-url":"https://example.test/204","selected-map":{"GLOBAL":"auto"},"skip-cert-verify":true}"""
+        val json = """{"test-url":"https://example.test/204","selected-map":{"GLOBAL":"auto"}}"""
 
         val params = gson.fromJson(json, SetupParams::class.java)
 
         assertEquals("https://example.test/204", params.testUrl)
         assertEquals(mapOf("GLOBAL" to "auto"), params.selectedMap)
-        assertTrue(params.skipCertVerify)
     }
 
     @Test
@@ -34,7 +33,6 @@ class SharedStateTest {
 
         assertTrue(encoded.contains("\"test-url\""))
         assertTrue(encoded.contains("\"selected-map\""))
-        assertTrue(encoded.contains("\"skip-cert-verify\""))
         assertTrue(!encoded.contains("testUrl"))
         assertTrue(!encoded.contains("selectedMap"))
     }
@@ -43,17 +41,16 @@ class SharedStateTest {
     fun `a full payload round-trips including nested vpn options`() {
         val json = """
             {
-              "startTip": "Starting",
-              "stopTip": "Stopping",
               "currentProfileName": "Work",
-              "stopText": "Halt",
               "onlyStatisticsProxy": true,
               "showStopAction": false,
+              "networkSpeedNotification": true,
+              "collapseQuickSettingsPanel": false,
               "vpnOptions": {
                 "enable": true,
                 "port": 7890,
                 "ipv6": false,
-                "dnsHijacking": true,
+                "captureDns": true,
                 "accessControlProps": {
                   "enable": true,
                   "mode": "rejectSelected",
@@ -75,10 +72,11 @@ class SharedStateTest {
 
         val state = gson.fromJson(json, SharedState::class.java)
 
-        assertEquals("Starting", state.startTip)
         assertEquals("Work", state.currentProfileName)
         assertEquals(true, state.onlyStatisticsProxy)
         assertEquals(false, state.showStopAction)
+        assertEquals(true, state.networkSpeedNotification)
+        assertEquals(false, state.collapseQuickSettingsPanel)
         assertEquals(7890, state.vpnOptions?.port)
         assertEquals("gvisor", state.vpnOptions?.stack)
         assertEquals(
@@ -94,9 +92,10 @@ class SharedStateTest {
         val defaults = SharedState()
 
         assertEquals("FlClash", defaults.currentProfileName)
-        assertEquals("Stop", defaults.stopText)
         assertEquals(false, defaults.onlyStatisticsProxy)
         assertEquals(true, defaults.showStopAction)
+        assertEquals(false, defaults.networkSpeedNotification)
+        assertEquals(true, defaults.collapseQuickSettingsPanel)
         assertNull(defaults.vpnOptions)
         assertNull(defaults.setupParams)
     }
@@ -109,8 +108,9 @@ class SharedStateTest {
         val state = gson.fromJson("{}", SharedState::class.java)
 
         assertNotNull(state)
-        assertEquals("Starting VPN...", state.startTip)
         assertEquals("FlClash", state.currentProfileName)
+        assertEquals(false, state.networkSpeedNotification)
+        assertEquals(true, state.collapseQuickSettingsPanel)
         assertNull(state.vpnOptions)
         assertNull(state.setupParams)
     }
@@ -120,8 +120,8 @@ class SharedStateTest {
         val state = gson.fromJson("""{"currentProfileName":"Work"}""", SharedState::class.java)
 
         assertEquals("Work", state.currentProfileName)
-        assertEquals("Stop", state.stopText)
-        assertEquals("Stopping VPN...", state.stopTip)
+        assertEquals(false, state.networkSpeedNotification)
+        assertEquals(true, state.collapseQuickSettingsPanel)
     }
 
     @Test

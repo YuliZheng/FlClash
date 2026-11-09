@@ -6,9 +6,6 @@ import 'package:fl_clash/models/common.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
-import 'package:fl_clash/providers/state.dart';
-import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/ui.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -43,20 +40,10 @@ extension HotKeyActionExt on HotKeyAction {
   }
 }
 
-typedef HotKeyRegistrar =
-    Future<List<HotKeyFailure>> Function({required List<HotKeySpec> specs});
-
 class HotKeyManager extends ConsumerStatefulWidget {
-  final HotKeyRegistrar? registerHotKeys;
-  final Stream<int> Function()? hotKeyEventSource;
   final Widget child;
 
-  const HotKeyManager({
-    super.key,
-    this.registerHotKeys,
-    this.hotKeyEventSource,
-    required this.child,
-  });
+  const HotKeyManager({super.key, required this.child});
 
   @override
   ConsumerState<HotKeyManager> createState() => _HotKeyManagerState();
@@ -65,17 +52,10 @@ class HotKeyManager extends ConsumerStatefulWidget {
 class _HotKeyManagerState extends ConsumerState<HotKeyManager> {
   StreamSubscription<int>? _eventSubscription;
   Future<void> _pendingUpdate = Future.value();
-  late final HotKeyRegistrar _registerHotKeys =
-      widget.registerHotKeys ?? setHotKeys;
-  late final Stream<int> Function() _hotKeyEvents =
-      widget.hotKeyEventSource ?? hotKeyEvents;
 
   @override
   void initState() {
     super.initState();
-    if (ref.read(safeModeProvider)) {
-      return;
-    }
     _subscribeHotKeyEvents();
     ref.listenManual(hotKeyActionsProvider, (prev, next) {
       if (!hotKeyActionListEquality.equals(prev, next)) {
@@ -102,7 +82,7 @@ class _HotKeyManagerState extends ConsumerState<HotKeyManager> {
     }
 
     try {
-      _eventSubscription = _hotKeyEvents().listen(
+      _eventSubscription = hotKeyEvents().listen(
         _handleHotKeyEvent,
         onError: warn,
       );
@@ -139,18 +119,6 @@ class _HotKeyManagerState extends ConsumerState<HotKeyManager> {
         setupAction.changeMode(Mode.global);
       case HotAction.directMode:
         setupAction.changeMode(Mode.direct);
-      case HotAction.delayTest:
-        unawaited(
-          ref
-              .read(proxiesActionProvider.notifier)
-              .delayTestGroups(ref.read(currentGroupsStateProvider).value),
-        );
-      case HotAction.updateProfiles:
-        unawaited(
-          globalState.safeRun(
-            ref.read(profilesActionProvider.notifier).updateProfiles,
-          ),
-        );
       case HotAction.copyEnv:
         unawaited(systemAction.copyProxyEnv());
       case HotAction.exit:
@@ -178,7 +146,7 @@ class _HotKeyManagerState extends ConsumerState<HotKeyManager> {
 
   Future<Map<HotAction, String>> _register(List<HotKeySpec> specs) async {
     try {
-      final failures = await _registerHotKeys(specs: specs);
+      final failures = await setHotKeys(specs: specs);
       final failed = {
         for (final failure in failures)
           if (failure.id >= 0 && failure.id < HotAction.values.length)
@@ -205,17 +173,12 @@ class _HotKeyManagerState extends ConsumerState<HotKeyManager> {
       shortcuts: {
         controlSingleActivator(LogicalKeyboardKey.keyW):
             const CloseWindowIntent(),
-        const SingleActivator(LogicalKeyboardKey.escape):
-            const EscapeBackIntent(),
       },
       child: Actions(
         actions: {
           CloseWindowIntent: CallbackAction<CloseWindowIntent>(
             onInvoke: (_) =>
                 ref.read(systemActionProvider.notifier).handleClose(false),
-          ),
-          EscapeBackIntent: CallbackAction<EscapeBackIntent>(
-            onInvoke: (_) => globalState.navigatorKey.currentState?.maybePop(),
           ),
           DoNothingIntent: CallbackAction<DoNothingIntent>(
             onInvoke: (_) => null,

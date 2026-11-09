@@ -1,4 +1,4 @@
-//go:build android
+//go:build android && cgo
 
 package platform
 
@@ -125,6 +125,14 @@ func ShouldBlockConnection() bool {
 	}
 	lastProbeAt.Store(now)
 	return blocked
+}
+
+func RequiresProtectCallback() bool {
+	return true
+}
+
+func CloseRejectedTunDescriptor(fd int) {
+	_ = syscall.Close(fd)
 }
 
 func probeFdPressure() bool {

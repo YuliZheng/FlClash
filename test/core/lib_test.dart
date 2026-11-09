@@ -45,7 +45,7 @@ class _FakeService implements Service {
   }
 
   @override
-  Future<bool> start() async {
+  Future<bool> start(SharedState state) async {
     calls.add('start');
     return startResult;
   }
@@ -218,7 +218,44 @@ void main() {
   });
 
   group('listeners', () {
-    test('a listener start is answered by the service', () async {
+    test('a missing start response does not submit native start', () async {
+      await lib.start();
+      service.calls.clear();
+
+      expect(await lib.startListener(), isNull);
+      expect(service.calls, ['invokeMethod:startListener']);
+    });
+
+    test('a rejected listener start does not submit native start', () async {
+      await lib.start();
+      service.onInvokeMethod = (call) =>
+          CoreMethodResponse(id: call.id, result: false);
+      service.calls.clear();
+
+      expect(await lib.startListener(), isFalse);
+      expect(service.calls, ['invokeMethod:startListener']);
+    });
+
+    test('a partial stop reports an unknown result', () async {
+      await lib.start();
+      service.onInvokeMethod = (call) =>
+          CoreMethodResponse(id: call.id, result: false);
+      service.calls.clear();
+
+      expect(await lib.stopListener(), isNull);
+      expect(service.calls, ['stop', 'invokeMethod:stopListener']);
+    });
+
+    test('a rejected service stop does not stop the core listener', () async {
+      await lib.start();
+      service.stopResult = false;
+      service.calls.clear();
+
+      expect(await lib.stopListener(), isFalse);
+      expect(service.calls, ['stop']);
+    });
+
+    test('a listener is started only when both sides agree', () async {
       await lib.start();
       service.onInvokeMethod = (_) =>
           const CoreMethodResponse(id: '1', result: true);
@@ -226,22 +263,7 @@ void main() {
       expect(await lib.startListener(), isTrue);
 
       service.startResult = false;
-      expect(await lib.startListener(), isFalse);
-
-      service.startResult = true;
-      service.onInvokeMethod = (_) => null;
-      expect(await lib.startListener(), isTrue);
-      expect(service.calls.last, 'start');
-    });
-
-    test('a listener stop is answered by the service', () async {
-      await lib.start();
-      service.onInvokeMethod = (_) => null;
-
-      expect(await lib.stopListener(), isTrue);
-
-      service.stopResult = false;
-      expect(await lib.stopListener(), isFalse);
+      expect(await lib.startListener(), isNull);
     });
 
     test('stopListener stops the service before the core listener', () async {
@@ -252,6 +274,26 @@ void main() {
 
       expect(await lib.stopListener(), isTrue);
       expect(service.calls, ['stop', 'invokeMethod:stopListener']);
+    });
+
+    test('service-owned listener starts only through the service', () async {
+      lib = CoreLib.scoped(service, listenerManagedByService: true);
+      await lib.start();
+      service.calls.clear();
+
+      expect(await lib.startListener(), isTrue);
+      expect(service.calls, ['start']);
+      expect(service.invokedCalls, isEmpty);
+    });
+
+    test('service-owned listener stops only through the service', () async {
+      lib = CoreLib.scoped(service, listenerManagedByService: true);
+      await lib.start();
+      service.calls.clear();
+
+      expect(await lib.stopListener(), isTrue);
+      expect(service.calls, ['stop']);
+      expect(service.invokedCalls, isEmpty);
     });
   });
 

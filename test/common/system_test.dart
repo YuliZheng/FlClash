@@ -1,10 +1,28 @@
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/core/desktop/helper_client.dart';
+import 'package:fl_clash/core/desktop/model.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
-import '../helpers/app_paths.dart';
+import '../core/desktop/fakes.dart';
+
+class _FakePathProvider extends PathProviderPlatform {
+  _FakePathProvider(this.root);
+
+  final String root;
+
+  @override
+  Future<String?> getTemporaryPath() async => root;
+
+  @override
+  Future<String?> getApplicationSupportPath() async => root;
+
+  @override
+  Future<String?> getApplicationCachePath() async => root;
+}
 
 class _RecordedRun {
   const _RecordedRun(this.executable, this.arguments);
@@ -19,16 +37,18 @@ class _RecordedRun {
 }
 
 /// Stands in for `Process.run`, keyed by executable plus its first argument so
-/// the several `networksetup` subcommands can answer differently.
+/// subcommands of one executable can answer differently.
 class _FakeProcesses {
   final List<_RecordedRun> runs = [];
   final Map<String, String> _stdout = {};
   final Map<String, int> _exitCodes = {};
+  final Map<String, String> _stderr = {};
   final Set<String> _failures = {};
 
-  void stub(String key, String stdout, {int exitCode = 0}) {
+  void stub(String key, String stdout, {int exitCode = 0, String stderr = ''}) {
     _stdout[key] = stdout;
     _exitCodes[key] = exitCode;
+    _stderr[key] = stderr;
   }
 
   void stubThrow(String key) {
@@ -62,7 +82,10 @@ class _FakeProcesses {
           _stdout[recorded.key] ??
           _stdout[executable] ??
           '',
-      '',
+      _stderr[recorded.commandLine] ??
+          _stderr[recorded.key] ??
+          _stderr[executable] ??
+          '',
     );
   }
 
@@ -74,36 +97,20 @@ class _FakeProcesses {
       runs.any((run) => run.key == key || run.executable == key);
 }
 
-const _routeOutput = '''
-   route to: default
-destination: default
-       mask: default
-  interface: en0
-      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
-''';
-
-const _serviceOrderOutput =
-    '''An asterisk (*) denotes that a network service is disabled.
-(1) Wi-Fi
-(Hardware Port: Wi-Fi, Device: en0)
-
-(2) Thunderbolt Bridge
-(Hardware Port: Thunderbolt Bridge, Device: bridge0)
-
-(3) iPhone USB
-(Hardware Port: iPhone USB, Device: en5)
-''';
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory root;
   late _FakeProcesses processes;
   String? password;
+  final readEffectiveUid = system.readEffectiveUid;
+  final elevationRun = linuxElevation.run;
+  final elevationRunWithInput = linuxElevation.runWithInput;
+  final elevationAskPassword = linuxElevation.askPassword;
 
-  setUpAll(() async {
+  setUpAll(() {
     root = Directory.systemTemp.createTempSync('system_test');
-    await useAppPaths(root);
+    PathProviderPlatform.instance = _FakePathProvider(root.path);
   });
 
   tearDownAll(() {
@@ -117,7 +124,7 @@ void main() {
   setUp(() {
     processes = _FakeProcesses();
     system.runProcess = processes.run;
-    MacOS().runProcess = processes.run;
+    system.readEffectiveUid = () => 1000;
     linuxElevation.run = processes.run;
     linuxElevation.runWithInput = processes.runWithInput;
     linuxElevation.askPassword = () async => password;
@@ -126,9 +133,58 @@ void main() {
 
   tearDown(() {
     system.runProcess = Process.run;
-    MacOS().runProcess = Process.run;
-    linuxElevation.run = Process.run;
+    system.readEffectiveUid = readEffectiveUid;
+    linuxElevation.run = elevationRun;
+    linuxElevation.runWithInput = elevationRunWithInput;
+    linuxElevation.askPassword = elevationAskPassword;
   });
+
+  group('root process', () {
+    test('reads the effective UID from the current process', () async {
+      final result = await Process.run('id', ['-u']);
+
+      expect(result.exitCode, 0);
+      expect(readEffectiveUid(), int.parse(result.stdout.toString().trim()));
+    });
+
+    test('skips file checks and elevation when already root', () async {
+      system.readEffectiveUid = () => 0;
+
+      expect(system.isRunningAsRoot, isTrue);
+      expect(await system.checkIsAdmin(), isTrue);
+      expect(await system.authorizeCore(), AuthorizeCode.none);
+      expect(processes.runs, isEmpty);
+    });
+
+    test('launches directly without probing the Helper', () async {
+      system.readEffectiveUid = () => 0;
+      final direct = FakeLauncher(owner: CoreProcessOwner.direct, pid: 1);
+      final helper = FakeLauncher(owner: CoreProcessOwner.helper, pid: 2);
+      final resolver = HelperLauncherResolver(
+        hasHelper: system.hasHelperService,
+        directLauncher: direct,
+        helperLauncher: helper,
+        helperReady: () async => throw StateError('unexpected Helper probe'),
+      );
+
+      expect(system.hasHelperService, isFalse);
+      expect(await resolver.resolve(), same(direct));
+    });
+
+    test('keeps the normal authorization path for non-root users', () async {
+      expect(system.isRunningAsRoot, isFalse);
+      expect(
+        system.hasHelperService,
+        system.isLinux &&
+            !system.isAppImage &&
+            Directory('/run/systemd/system').existsSync(),
+      );
+      if (system.isAppImage) {
+        expect(await system.authorizeCore(), AuthorizeCode.error);
+        expect(processes.runs, isEmpty);
+      }
+    });
+  }, skip: !Platform.isLinux && !Platform.isMacOS);
 
   group('statArguments', () {
     test('selects the BSD format on macOS and the GNU one elsewhere', () {
@@ -185,7 +241,7 @@ void main() {
     });
 
     test('passes a path containing spaces through untouched', () {
-      const path = '/Users/a b/Library/Application Support/com.follow.clash';
+      const path = '/Users/a b/Library/Application Support/cc.chenx.flclash';
 
       final arguments = System.aclArguments(path, 'alice');
 
@@ -223,39 +279,21 @@ void main() {
   });
 
   group('isPrivilegedStatOutput', () {
-    test('accepts a root-owned setuid binary closed to others', () {
+    test('accepts a root-owned setuid binary', () {
       expect(
         System.isPrivilegedStatOutput(
-          'root:admin -rwsr-x---\n',
+          'root:admin -rwsr-sr-x\n',
           ownerPrefix: 'root:admin',
         ),
         isTrue,
       );
       expect(
         System.isPrivilegedStatOutput(
-          'root:alice -rws------+',
+          'root:root -rwsr-sr-x',
           ownerPrefix: 'root:',
         ),
         isTrue,
       );
-    });
-
-    test('rejects a setuid binary that others can execute', () {
-      for (final mode in [
-        '-rwsr-sr-x',
-        '-rwsr-xr-x',
-        '-rwsr-x--x',
-        '-rwsr-x--t',
-      ]) {
-        expect(
-          System.isPrivilegedStatOutput(
-            'root:admin $mode',
-            ownerPrefix: 'root:admin',
-          ),
-          isFalse,
-          reason: mode,
-        );
-      }
     });
 
     test('rejects a root-owned binary without the setuid bit', () {
@@ -290,20 +328,11 @@ void main() {
     'checkIsAdmin',
     () {
       test('stats the core path verbatim', () async {
-        processes.stub('stat', 'root:admin -rwsr-x---');
+        processes.stub('stat', 'root:admin -rwsr-sr-x');
 
         expect(await system.checkIsAdmin(), isTrue);
         expect(processes.argumentsFor('stat').last, appPath.corePath);
       });
-
-      test(
-        'does not trust a core earlier versions left executable by all',
-        () async {
-          processes.stub('stat', 'root:admin -rwsr-sr-x');
-
-          expect(await system.checkIsAdmin(), isFalse);
-        },
-      );
 
       test('reports a core that is not setuid root', () async {
         processes.stub('stat', 'alice:staff -rwxr-xr-x');
@@ -322,59 +351,6 @@ void main() {
         : false,
   );
 
-  group('elevation shells', () {
-    test('macOS hands the Core to the admin group and nobody else', () {
-      expect(
-        System.macOSElevationShell('/Apps/Fl Clash/core'),
-        "chown root:admin '/Apps/Fl Clash/core' && "
-        "chmod 4750 '/Apps/Fl Clash/core'",
-      );
-    });
-
-    test('Linux hands the Core to the requesting user\'s group', () {
-      final shell = System.linuxElevationShell('/opt/FlClash/FlClashCore');
-
-      expect(
-        shell,
-        startsWith(r'group=$(id -g "${PKEXEC_UID:-$SUDO_UID}") && '),
-      );
-      expect(shell, contains(r'chown "root:$group" '));
-      expect(shell, endsWith("chmod 4750 '/opt/FlClash/FlClashCore'"));
-    });
-
-    test('neither leaves execute to others', () {
-      for (final shell in [
-        System.macOSElevationShell('/core'),
-        System.linuxElevationShell('/core'),
-      ]) {
-        expect(shell, isNot(contains('+sx')));
-        expect(shell, contains('chmod 4750'));
-      }
-    });
-  });
-
-  group('authorizeCore on macOS', () {
-    test('refuses an account outside the admin group', () async {
-      processes.stub('id', 'alice staff everyone');
-
-      expect(await system.authorizeCore(), AuthorizeCode.error);
-      expect(processes.ran('osascript'), isFalse);
-    });
-
-    test('elevates the Core for an admin account', () async {
-      processes.stub('id', 'alice staff admin');
-
-      expect(await system.authorizeCore(), AuthorizeCode.success);
-      expect(processes.argumentsFor('osascript').last, contains('chmod 4750'));
-    });
-  }, skip: system.isMacOS ? false : 'macOS only');
-
-  group('Windows installArguments', () {
-    test('names this process as the account the Helper serves', () {
-      expect(Windows.installArguments(4242), 'install --owner-pid 4242');
-    });
-  });
-
   group('Linux installService', () {
     test('asks pkexec to install the bundled Helper', () async {
       expect(await Linux().installService(), isTrue);
@@ -385,6 +361,20 @@ void main() {
       processes.stub('pkexec', '', exitCode: 126);
 
       expect(await Linux().installService(), isFalse);
+      expect(processes.ran('sudo'), isFalse);
+    });
+
+    test('keeps a polkit denial final instead of asking sudo', () async {
+      processes.stub(
+        'pkexec',
+        '',
+        exitCode: 127,
+        stderr: 'Error executing command as another user: Not authorized',
+      );
+      password = 'secret';
+
+      expect(await Linux().installService(), isFalse);
+      expect(processes.ran('sudo'), isFalse);
     });
 
     test('installs through cached sudo credentials without pkexec', () async {
@@ -401,7 +391,14 @@ void main() {
     });
 
     test('asks for the sudo password when no polkit agent answers', () async {
-      processes.stub('pkexec', '', exitCode: 127);
+      processes.stub(
+        'pkexec',
+        '',
+        exitCode: 127,
+        stderr:
+            'Error executing command as another user: '
+            'No authentication agent found.',
+      );
       processes.stub('sudo -n', '', exitCode: 1);
       password = 'secret';
 
@@ -435,144 +432,5 @@ void main() {
       expect(await Linux().installService(), isFalse);
       expect(processes.ran('sudo -S'), isFalse);
     });
-
-    test('does not ask sudo after the polkit dialog is dismissed', () async {
-      processes.stub('pkexec', '', exitCode: 126);
-
-      expect(await Linux().installService(), isFalse);
-      expect(processes.ran('sudo'), isFalse);
-    });
-  });
-
-  group('parseDefaultInterface', () {
-    test('reads the interface off route output', () {
-      expect(MacOS.parseDefaultInterface(_routeOutput), 'en0');
-    });
-
-    test('returns null when there is no default route', () {
-      expect(
-        MacOS.parseDefaultInterface('route: writing to routing socket'),
-        isNull,
-      );
-    });
-
-    test('returns null when the interface line carries extra fields', () {
-      expect(MacOS.parseDefaultInterface('  interface: en0 en1\n'), isNull);
-    });
-  });
-
-  group('parseServiceName', () {
-    test('reads a single-word service name', () {
-      expect(MacOS.parseServiceName(_serviceOrderOutput, 'en0'), 'Wi-Fi');
-    });
-
-    test('keeps every word of a multi-word service name', () {
-      expect(
-        MacOS.parseServiceName(_serviceOrderOutput, 'bridge0'),
-        'Thunderbolt Bridge',
-      );
-      expect(MacOS.parseServiceName(_serviceOrderOutput, 'en5'), 'iPhone USB');
-    });
-
-    test('returns null for a device no service claims', () {
-      expect(MacOS.parseServiceName(_serviceOrderOutput, 'utun0'), isNull);
-    });
-
-    test('returns null when the block carries no numbered name line', () {
-      expect(
-        MacOS.parseServiceName('(Hardware Port: Wi-Fi, Device: en0)', 'en0'),
-        isNull,
-      );
-    });
-  });
-
-  group('parseDnsServers', () {
-    test('maps the empty notice onto an empty list', () {
-      expect(
-        MacOS.parseDnsServers("There aren't any DNS Servers set on Wi-Fi.\n"),
-        isEmpty,
-      );
-    });
-
-    test('splits a configured list', () {
-      expect(MacOS.parseDnsServers('1.1.1.1\n8.8.8.8\n'), [
-        '1.1.1.1',
-        '8.8.8.8',
-      ]);
-    });
-  });
-
-  group('resolveDefaultService', () {
-    test('joins the route lookup to the service order listing', () async {
-      processes.stub('route', _routeOutput);
-      processes.stub(
-        'networksetup -listnetworkserviceorder',
-        _serviceOrderOutput,
-      );
-
-      expect(await MacOS().resolveDefaultService(), 'Wi-Fi');
-    });
-
-    test('stops before listing services without a default route', () async {
-      expect(await MacOS().resolveDefaultService(), isNull);
-      expect(processes.ran('networksetup -listnetworkserviceorder'), isFalse);
-    });
-
-    test('reports a failing route lookup as unresolved', () async {
-      processes.stub('route', '', exitCode: 1);
-
-      expect(await MacOS().resolveDefaultService(), isNull);
-      expect(processes.ran('networksetup -listnetworkserviceorder'), isFalse);
-    });
-
-    test('survives a missing executable', () async {
-      processes.stubThrow('route');
-
-      expect(await MacOS().resolveDefaultService(), isNull);
-    });
-  });
-
-  group('readDnsServers', () {
-    test('reads the servers of the requested service', () async {
-      processes.stub('networksetup -getdnsservers', '1.1.1.1\n8.8.8.8\n');
-
-      expect(await MacOS().readDnsServers('Wi-Fi'), ['1.1.1.1', '8.8.8.8']);
-      expect(processes.argumentsFor('networksetup -getdnsservers'), [
-        '-getdnsservers',
-        'Wi-Fi',
-      ]);
-    });
-
-    test('returns null when the lookup fails', () async {
-      processes.stub('networksetup -getdnsservers', '', exitCode: 1);
-
-      expect(await MacOS().readDnsServers('Wi-Fi'), isNull);
-    });
-  });
-
-  group('writeDnsServers', () {
-    test('writes the requested servers', () async {
-      expect(await MacOS().writeDnsServers('Wi-Fi', ['1.1.1.1']), isTrue);
-      expect(processes.argumentsFor('networksetup -setdnsservers'), [
-        '-setdnsservers',
-        'Wi-Fi',
-        '1.1.1.1',
-      ]);
-    });
-
-    test('clears the servers with the literal networksetup keyword', () async {
-      expect(await MacOS().writeDnsServers('Wi-Fi', []), isTrue);
-      expect(processes.argumentsFor('networksetup -setdnsservers'), [
-        '-setdnsservers',
-        'Wi-Fi',
-        'Empty',
-      ]);
-    });
-
-    test('reports a rejected write instead of assuming success', () async {
-      processes.stub('networksetup -setdnsservers', '', exitCode: 1);
-
-      expect(await MacOS().writeDnsServers('Wi-Fi', ['1.1.1.1']), isFalse);
-    });
-  });
+  }, skip: Platform.isWindows);
 }

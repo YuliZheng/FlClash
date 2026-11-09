@@ -1,9 +1,8 @@
-import 'dart:async';
-
-import 'package:fl_clash/common/app_localizations.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/manager/locale_manager.dart';
 import 'package:fl_clash/manager/tray_manager.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:material_ui/material_ui.dart';
@@ -16,7 +15,7 @@ import 'package:tray/tray.dart';
 import '../helpers/test_profiles.dart';
 
 const _trayChannel = MethodChannel('tray');
-const _windowChannel = MethodChannel('window');
+const _windowChannel = MethodChannel('window_manager');
 const _codec = StandardMethodCodec();
 
 class _RecordingSystemAction extends SystemAction {
@@ -37,24 +36,12 @@ class _FailingSystemAction extends SystemAction {
   }
 }
 
-class _SlowFirstFailureSystemAction extends SystemAction {
-  static int updateTrayCount = 0;
-  static Completer<void> firstUpdate = Completer<void>();
-
-  @override
-  Future<void> updateTray() async {
-    if (updateTrayCount++ == 0) {
-      await firstUpdate.future;
-      throw StateError('tray boom');
-    }
-  }
-}
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late ProviderContainer container;
   late List<String> windowCalls;
+  late List<MethodCall> windowMethodCalls;
 
   setUpAll(() async {
     await AppLocalizations.load(const Locale('en'));
@@ -64,12 +51,14 @@ void main() {
     _RecordingSystemAction.updateTrayCount = 0;
     _RecordingSystemAction.updateTrayLocales.clear();
     windowCalls = <String>[];
+    windowMethodCalls = <MethodCall>[];
     Tray.instance.resetForTesting();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_trayChannel, (call) async => true);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_windowChannel, (call) async {
           windowCalls.add(call.method);
+          windowMethodCalls.add(call);
           return call.method == 'isMinimized' ? false : null;
         });
   });
@@ -93,6 +82,8 @@ void main() {
   Future<void> pumpTrayManager(
     WidgetTester tester, {
     SystemAction Function()? systemAction,
+    bool? isMacOS,
+    Future<void> Function()? openMenu,
   }) async {
     container = ProviderContainer(
       overrides: [
@@ -106,7 +97,13 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: TrayManager(child: SizedBox.shrink())),
+        child: MaterialApp(
+          home: TrayManager(
+            isMacOS: isMacOS,
+            openMenu: openMenu,
+            child: const SizedBox.shrink(),
+          ),
+        ),
       ),
     );
     await tester.pump();
@@ -123,7 +120,6 @@ void main() {
           locale: locale,
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            AppUiLocalizations.delegate,
             ...GlobalMaterialLocalizations.delegates,
           ],
           supportedLocales: AppLocalizations.delegate.supportedLocales,
@@ -143,16 +139,52 @@ void main() {
   });
 
   testWidgets('activating the icon brings the window back', (tester) async {
-    await pumpTrayManager(tester);
+    await pumpTrayManager(tester, isMacOS: false);
     windowCalls.clear();
 
     await emitTrayEvent('onIconActivated');
     await tester.pumpAndSettle();
-    // A macOS host arms the Dock settle timer on show; drain it so the binding
-    // ends the test with no pending timer.
     await tester.pump(const Duration(seconds: 1));
 
     expect(windowCalls, containsAll(<String>['show', 'focus']));
+  });
+
+  testWidgets('icon activation carries focus credentials to the window', (
+    tester,
+  ) async {
+    await pumpTrayManager(tester, isMacOS: false);
+    windowMethodCalls.clear();
+
+    await emitTrayEvent('onIconActivated', {
+      'activationTimestamp': 1234,
+      'activationToken': 'wayland-token',
+    });
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+
+    final show = windowMethodCalls.singleWhere((call) => call.method == 'show');
+    expect(show.arguments, containsPair('activationTimestamp', 1234));
+    expect(show.arguments, containsPair('activationToken', 'wayland-token'));
+    expect(windowCalls, contains('focus'));
+  });
+
+  testWidgets('activating the icon opens the menu on macOS', (tester) async {
+    var openMenuCount = 0;
+    await pumpTrayManager(
+      tester,
+      isMacOS: true,
+      openMenu: () async {
+        openMenuCount++;
+      },
+    );
+    windowCalls.clear();
+
+    await emitTrayEvent('onIconActivated');
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(openMenuCount, 1);
+    expect(windowCalls, isEmpty);
   });
 
   testWidgets('a menu request is forwarded to the tray', (tester) async {
@@ -190,6 +222,21 @@ void main() {
     expect(_RecordingSystemAction.updateTrayCount, 0);
   });
 
+  testWidgets('a hotkey change pushes the tray forward', (tester) async {
+    await pumpTrayManager(tester);
+    _RecordingSystemAction.updateTrayCount = 0;
+
+    container.read(hotKeyActionsProvider.notifier).value = [
+      HotKeyAction(
+        action: HotAction.start,
+        key: PhysicalKeyboardKey.keyS.usbHidUsage,
+      ),
+    ];
+    await tester.pumpAndSettle();
+
+    expect(_RecordingSystemAction.updateTrayCount, 1);
+  });
+
   testWidgets('a failed tray update is reported instead of thrown', (
     tester,
   ) async {
@@ -200,31 +247,6 @@ void main() {
         .update((state) => state.copyWith(mixedPort: state.mixedPort + 1));
     await tester.pumpAndSettle();
 
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('a change made during a failing update still reaches the tray', (
-    tester,
-  ) async {
-    _SlowFirstFailureSystemAction.updateTrayCount = 0;
-    _SlowFirstFailureSystemAction.firstUpdate = Completer<void>();
-    await pumpTrayManager(
-      tester,
-      systemAction: _SlowFirstFailureSystemAction.new,
-    );
-
-    for (var i = 0; i < 2; i++) {
-      container
-          .read(patchClashConfigProvider.notifier)
-          .update((state) => state.copyWith(mixedPort: state.mixedPort + 1));
-      await tester.pump();
-    }
-    expect(_SlowFirstFailureSystemAction.updateTrayCount, 1);
-
-    _SlowFirstFailureSystemAction.firstUpdate.complete();
-    await tester.pumpAndSettle();
-
-    expect(_SlowFirstFailureSystemAction.updateTrayCount, 2);
     expect(tester.takeException(), isNull);
   });
 

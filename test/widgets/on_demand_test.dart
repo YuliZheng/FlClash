@@ -6,16 +6,16 @@ import 'package:fl_clash/providers/on_demand.dart';
 import 'package:fl_clash/providers/state.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/views/config/on_demand.dart';
+import 'package:fl_clash/views/profiles/overwrite/custom/widgets.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/services.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
 
-import '../helpers/glyph_finders.dart';
 import '../helpers/test_app.dart';
 
 class _TestExcludeSSIDs extends ExcludeSSIDs {
@@ -62,7 +62,6 @@ void main() {
     bool batteryIgnored = false,
     bool isAndroid = false,
     bool isMacOS = false,
-    bool isWindows = false,
     bool isStart = false,
     Locale? locale,
     Size size = const Size(1400, 1000),
@@ -92,11 +91,7 @@ void main() {
         container: container,
         child: TestApp(
           locale: locale,
-          child: OnDemandView(
-            isAndroid: isAndroid,
-            isMacOS: isMacOS,
-            isWindows: isWindows,
-          ),
+          child: OnDemandView(isAndroid: isAndroid, isMacOS: isMacOS),
         ),
       ),
     );
@@ -109,9 +104,9 @@ void main() {
     await pumpView(tester);
 
     expect(find.text('SSIDs are empty'), findsOneWidget);
-    expect(find.byTooltip('Add'), findsOneWidget);
-    expect(find.byTooltip('Select all'), findsNothing);
-    expect(find.byGlyph(AppGlyphs.delete), findsNothing);
+    expect(find.text('Add'), findsOneWidget);
+    expect(find.text('Select all'), findsNothing);
+    expect(find.byIcon(Symbols.delete), findsNothing);
   });
 
   testWidgets('every excluded SSID is rendered', (tester) async {
@@ -126,14 +121,14 @@ void main() {
     tester,
   ) async {
     await pumpView(tester, ssids: ['Home', 'Office']);
-    expect(find.byGlyph(AppGlyphs.delete), findsNothing);
+    expect(find.byIcon(Symbols.delete), findsNothing);
 
     await tester.tap(find.byType(CommonCheckBox).first);
     await tester.pumpAndSettle();
 
-    expect(find.byGlyph(AppGlyphs.delete), findsOneWidget);
-    expect(find.byTooltip('Select all'), findsOneWidget);
-    expect(find.byTooltip('Add'), findsNothing);
+    expect(find.byIcon(Symbols.delete), findsOneWidget);
+    expect(find.text('Select all'), findsOneWidget);
+    expect(find.text('Add'), findsNothing);
   });
 
   testWidgets('select all takes every SSID, and pressing it again clears', (
@@ -143,17 +138,13 @@ void main() {
     await tester.tap(find.byType(CommonCheckBox).first);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Select all'));
+    await tester.tap(find.text('Select all'));
     await tester.pumpAndSettle();
     expect(container.read(itemsProvider(_viewKey(tester))), {'Home', 'Office'});
 
-    await tester.tap(find.byTooltip('Select all'));
+    await tester.tap(find.text('Select all'));
     await tester.pumpAndSettle();
-    expect(
-      find.byTooltip('Add'),
-      findsOneWidget,
-      reason: 'selection was cleared',
-    );
+    expect(find.text('Add'), findsOneWidget, reason: 'selection was cleared');
   });
 
   testWidgets('deleting removes the selected SSIDs and clears the selection', (
@@ -163,16 +154,12 @@ void main() {
     await tester.tap(find.byType(CommonCheckBox).first);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byGlyph(AppGlyphs.delete));
+    await tester.tap(find.byIcon(Symbols.delete));
     await tester.pumpAndSettle();
 
     expect(container.read(excludeSSIDsProvider), ['Office']);
     expect(find.text('Home'), findsNothing);
-    expect(
-      find.byTooltip('Add'),
-      findsOneWidget,
-      reason: 'selection was cleared',
-    );
+    expect(find.text('Add'), findsOneWidget, reason: 'selection was cleared');
   });
 
   testWidgets('the location prerequisite reflects a denied permission', (
@@ -249,25 +236,6 @@ void main() {
     expect(find.text('Location permission required'), findsOneWidget);
   });
 
-  testWidgets('Windows refused location access offers the settings', (
-    tester,
-  ) async {
-    const channel = MethodChannel('wifi_ssid');
-    final messenger = tester.binding.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(
-      channel,
-      (_) async => WifiSsidPermission.permanentlyDenied.index,
-    );
-    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
-    await pumpView(tester, isWindows: true);
-
-    await tester.tap(find.text('Tap to authorize'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Location permission required'), findsOneWidget);
-    expect(find.text('Go'), findsOneWidget);
-  });
-
   testWidgets('Android also asks to be left out of battery optimization', (
     tester,
   ) async {
@@ -334,10 +302,10 @@ void main() {
         container.read(batteryOptimizationIgnoredProvider.notifier)
             as _TestBatteryOptimizationIgnored;
     expect(notifier.requests, 1);
-    expect(find.byTooltip('Tip'), findsNothing);
+    expect(find.byType(InfoMessageButton), findsNothing);
   });
 
-  testWidgets('the authorize action trails its row, the reason the group', (
+  testWidgets('the authorize action sits on its own line under the text', (
     tester,
   ) async {
     await pumpView(tester, isMacOS: true, locale: const Locale('ru'));
@@ -345,20 +313,25 @@ void main() {
     final appLocalizations = AppLocalizations.of(
       tester.element(find.byType(OnDemandView)),
     );
-    final row = tester.getRect(find.byType(DecorationListItem).first);
     final desc = find.text(appLocalizations.locationPermissionDesc);
-    final button = tester.getRect(
-      find
-          .ancestor(
-            of: find.text(appLocalizations.tapToAuthorize),
-            matching: find.byType(FilledButton),
-          )
-          .first,
-    );
+    final button = find
+        .ancestor(
+          of: find.text(appLocalizations.tapToAuthorize),
+          matching: find.byType(FilledButton),
+        )
+        .first;
 
-    expect(button.center.dy, closeTo(row.center.dy, 1));
-    expect(button.right, closeTo(row.right - 16, 1));
-    expect(tester.getTopLeft(desc).dy, greaterThanOrEqualTo(row.bottom));
+    expect(
+      tester.getTopLeft(button).dy,
+      greaterThanOrEqualTo(tester.getBottomLeft(desc).dy),
+    );
+    expect(
+      tester.getRect(button).right,
+      closeTo(
+        tester.getRect(find.byType(DecorationListItem).first).right - 16,
+        1,
+      ),
+    );
   });
 
   testWidgets('a desktop that is not macOS asks for no prerequisite', (

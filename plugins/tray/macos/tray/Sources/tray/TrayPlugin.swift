@@ -1,10 +1,12 @@
 import Cocoa
 import FlutterMacOS
 
-public class TrayPlugin: NSObject, FlutterPlugin {
+public class TrayPlugin: NSObject, FlutterPlugin, NSMenuDelegate {
     private var channel: FlutterMethodChannel!
     private var statusItem: TrayStatusItem?
     private var menu: TrayMenu?
+    private var cachedIcon: NSDictionary?
+    private var cachedImage: NSImage?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "tray", binaryMessenger: registrar.messenger)
@@ -24,6 +26,8 @@ public class TrayPlugin: NSObject, FlutterPlugin {
             result(true)
         case "openMenu":
             result(openMenu())
+        case "updateMenuItems":
+            result(updateMenuItems(call.arguments as? [String: Any]))
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -45,18 +49,28 @@ public class TrayPlugin: NSObject, FlutterPlugin {
             item.setImage(image, position: icon["position"] as? String ?? "leading")
         }
 
+        item.setToolTip(arguments["toolTip"] as? String ?? "")
         item.setTitle(arguments["title"] as? String ?? "")
 
         if let items = arguments["menu"] as? [[String: Any]] {
-            menu = TrayMenu(
-                items: items,
-                onSelect: { [weak self] id in
-                    self?.channel.invokeMethod("onMenuItemSelected", arguments: ["id": id])
-                },
-                onClose: { [weak self] in
-                    self?.statusItem?.closeMenu()
-                }
-            )
+            let appearance = menuAppearance(arguments["brightness"] as? String)
+            let attachedMenu = menu.flatMap {
+                item.statusItem.menu === $0 ? $0 : nil
+            }
+            menu?.appearance = appearance
+            if let menu, menu.update(items: items) {
+                return true
+            }
+            let built = TrayMenu(items: items) { [weak self] id in
+                self?.sendSelection(id: id)
+            }
+            built.appearance = appearance
+            built.delegate = self
+            menu = built
+            if let attachedMenu {
+                attachedMenu.cancelTracking()
+                item.openMenu(built)
+            }
         }
 
         return true
@@ -74,6 +88,8 @@ public class TrayPlugin: NSObject, FlutterPlugin {
         statusItem?.remove()
         statusItem = nil
         menu = nil
+        cachedIcon = nil
+        cachedImage = nil
     }
 
     private func openMenu() -> Bool {
@@ -84,10 +100,22 @@ public class TrayPlugin: NSObject, FlutterPlugin {
         return true
     }
 
+    private func updateMenuItems(_ arguments: [String: Any]?) -> Bool {
+        guard let updates = arguments?["updates"] as? [[String: Any]] else {
+            return false
+        }
+        return menu?.updateMenuItems(updates) ?? false
+    }
+
     private func makeStatusItem() -> TrayStatusItem? {
-        guard let item = TrayStatusItem(onMenuRequested: { [weak self] in
-            self?.channel.invokeMethod("onMenuRequested", arguments: nil)
-        }) else {
+        guard let item = TrayStatusItem(
+            onActivate: { [weak self] in
+                self?.channel.invokeMethod("onIconActivated", arguments: nil)
+            },
+            onMenuRequested: { [weak self] in
+                self?.channel.invokeMethod("onMenuRequested", arguments: nil)
+            }
+        ) else {
             return nil
         }
         statusItem = item
@@ -95,6 +123,10 @@ public class TrayPlugin: NSObject, FlutterPlugin {
     }
 
     private func makeImage(_ icon: [String: Any]) -> NSImage? {
+        let descriptor = icon as NSDictionary
+        if cachedIcon == descriptor, let cachedImage {
+            return cachedImage
+        }
         let size = icon["size"] as? Int ?? 18
         let pointSize = NSSize(width: size, height: size)
         let image = NSImage(size: pointSize)
@@ -111,6 +143,31 @@ public class TrayPlugin: NSObject, FlutterPlugin {
             return nil
         }
         image.isTemplate = icon["isTemplate"] as? Bool ?? false
+        cachedIcon = descriptor
+        cachedImage = image
         return image
+    }
+
+    private func sendSelection(id: Int) {
+        var arguments: [String: Any] = ["id": id]
+        if let event = NSApp.currentEvent {
+            arguments["activationTimestamp"] = Int(event.timestamp * 1000)
+        }
+        channel.invokeMethod("onMenuItemSelected", arguments: arguments)
+    }
+
+    private func menuAppearance(_ brightness: String?) -> NSAppearance? {
+        switch brightness {
+        case "dark": return NSAppearance(named: .darkAqua)
+        case "light": return NSAppearance(named: .aqua)
+        default: return nil
+        }
+    }
+
+    public func menuDidClose(_ closedMenu: NSMenu) {
+        guard statusItem?.statusItem.menu === closedMenu else {
+            return
+        }
+        statusItem?.closeMenu()
     }
 }

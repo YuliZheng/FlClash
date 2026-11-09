@@ -4,20 +4,18 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/services.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
 
 class OnDemandView extends ConsumerStatefulWidget {
-  const OnDemandView({super.key, this.isAndroid, this.isMacOS, this.isWindows});
+  const OnDemandView({super.key, this.isAndroid, this.isMacOS});
 
   final bool? isAndroid;
   final bool? isMacOS;
-  final bool? isWindows;
 
   @override
   ConsumerState createState() => _OnDemandViewState();
@@ -32,45 +30,24 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
 
   bool get _isMacOS => widget.isMacOS ?? system.isMacOS;
 
-  bool get _isWindows => widget.isWindows ?? system.isWindows;
-
-  bool get _needsLocationPermission => _isAndroid || _isMacOS || _isWindows;
-
   void _handlePermanentlyDeniedLocationPermission() {
     if (_isMacOS) {
       final appLocalizations = context.appLocalizations;
-      dialogs.showAlert(
+      dialogs.showMessage(
         title: appLocalizations.locationPermissionRequired,
+        cancelable: false,
         message: TextSpan(
-          style: AppTextStyle.subheadline.of(context),
+          style: context.textTheme.bodyMedium,
           text: appLocalizations.locationPermissionGuide(appName),
         ),
       );
     } else if (_isAndroid) {
       app?.openAppSettings();
-    } else if (_isWindows) {
-      unawaited(_promptLocationSettings());
-    }
-  }
-
-  Future<void> _promptLocationSettings() async {
-    final appLocalizations = context.appLocalizations;
-    final needGo = await dialogs.showMessage(
-      title: appLocalizations.locationPermissionRequired,
-      message: TextSpan(text: appLocalizations.locationPermissionDeniedMessage),
-      confirmText: appLocalizations.go,
-    );
-    if (needGo != true) {
-      return;
-    }
-    if (_isWindows) {
-      unawaited(launchUrl(Uri.parse('ms-settings:privacy-location')));
-    } else {
-      unawaited(app?.openAppSettings());
     }
   }
 
   Future<void> _handleRequestLocationPermission() async {
+    final appLocalizations = context.appLocalizations;
     final permission = ref.read(locationPermissionsProvider);
     if (permission == WifiSsidPermission.granted) {
       return;
@@ -96,8 +73,17 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
         _handlePermanentlyDeniedLocationPermission();
         return;
       case WifiSsidPermission.denied:
-        await _promptLocationSettings();
+        break;
     }
+    final needGo = await dialogs.showMessage(
+      title: appLocalizations.locationPermissionRequired,
+      message: TextSpan(text: appLocalizations.locationPermissionDeniedMessage),
+      confirmText: appLocalizations.go,
+    );
+    if (needGo != true) {
+      return;
+    }
+    unawaited(app?.openAppSettings());
   }
 
   void _handleRequestIgnoreBatteryOptimization() {
@@ -112,6 +98,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     final appLocalizations = context.appLocalizations;
     final newSSID = await dialogs.showCommonDialog<String>(
       child: InputDialog(
+        autofocus: ssid == null,
         title: ssid == null
             ? appLocalizations.addSsid
             : appLocalizations.editSsid,
@@ -158,11 +145,12 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
       key: ValueKey(ssid),
       index: index,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: sectionPagePadding.copyWith(bottom: 0),
         child: ItemPositionProvider(
           position: position,
           child: SelectedDecorationListItem(
             isEditing: isEditing,
+            minVerticalPadding: 8,
             title: TooltipText(
               text: Text(ssid, maxLines: 2, overflow: TextOverflow.ellipsis),
             ),
@@ -205,41 +193,34 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
   }) {
     final appLocalizations = context.appLocalizations;
     return CommonMinFilledButtonTheme(
-      child: ElasticButton(
-        child: FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: authorized
-                ? null
-                : context.colorScheme.errorContainer,
-            foregroundColor: authorized
-                ? null
-                : context.colorScheme.onErrorContainer,
-            padding: const EdgeInsets.symmetric(
-              horizontal: _authorizeButtonPadding,
-            ),
-            minimumSize: const Size(_minAuthorizeButtonWidth, 40),
+      child: FilledButton(
+        style: FilledButton.styleFrom(
+          backgroundColor: authorized ? null : context.colorScheme.error,
+          padding: const EdgeInsets.symmetric(
+            horizontal: _authorizeButtonPadding,
           ),
-          onPressed: onPressed,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              ExcludeSemantics(
-                child: Opacity(
-                  opacity: 0,
-                  child: Text(
-                    authorized
-                        ? appLocalizations.tapToAuthorize
-                        : appLocalizations.authorized,
-                  ),
+          minimumSize: const Size(_minAuthorizeButtonWidth, 40),
+        ),
+        onPressed: onPressed,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            ExcludeSemantics(
+              child: Opacity(
+                opacity: 0,
+                child: Text(
+                  authorized
+                      ? appLocalizations.tapToAuthorize
+                      : appLocalizations.authorized,
                 ),
               ),
-              Text(
-                authorized
-                    ? appLocalizations.authorized
-                    : appLocalizations.tapToAuthorize,
-              ),
-            ],
-          ),
+            ),
+            Text(
+              authorized
+                  ? appLocalizations.authorized
+                  : appLocalizations.tapToAuthorize,
+            ),
+          ],
         ),
       ),
     );
@@ -247,9 +228,27 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
 
   Widget _buildPrerequisiteItem({
     required String title,
+    required String desc,
     required Widget action,
   }) {
-    return DecorationListItem(title: TooltipLabel(title), trailing: action);
+    return DecorationListItem(
+      minVerticalPadding: 0,
+      title: Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: TooltipLabel(title),
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: 8,
+          children: [
+            Text(desc),
+            Align(alignment: Alignment.centerRight, child: action),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildBatteryOptimizationItem() {
@@ -258,6 +257,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     final isLoading = ignored.isLoading;
     return _buildPrerequisiteItem(
       title: appLocalizations.ignoreBatteryOptimization,
+      desc: appLocalizations.batteryOptimizationDesc,
       action: Stack(
         alignment: Alignment.centerRight,
         children: [
@@ -271,7 +271,8 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
               onPressed: _handleRequestIgnoreBatteryOptimization,
             ),
           ),
-          if (isLoading) const CommonCircleLoading(size: 24),
+          if (isLoading)
+            const SizedBox.square(dimension: 32, child: CommonCircleLoading()),
         ],
       ),
     );
@@ -286,6 +287,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     );
     return _buildPrerequisiteItem(
       title: appLocalizations.locationPermission,
+      desc: appLocalizations.locationPermissionDesc,
       action: _buildAuthorizeButton(
         authorized: granted,
         onPressed: _handleRequestLocationPermission,
@@ -294,17 +296,13 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
   }
 
   Widget _buildPrerequisites() {
-    final appLocalizations = context.appLocalizations;
-    return generateSection(
-      title: appLocalizations.prerequisites,
+    return generateSectionV3(
+      title: context.appLocalizations.prerequisites,
+      isFirst: !system.isIOS,
       items: [
         if (_isAndroid) _buildBatteryOptimizationItem(),
-        if (_needsLocationPermission) _buildLocationPermissionItem(),
+        if (_isAndroid || _isMacOS) _buildLocationPermissionItem(),
       ],
-      footer: [
-        if (_isAndroid) appLocalizations.batteryOptimizationDesc,
-        if (_needsLocationPermission) appLocalizations.locationPermissionDesc,
-      ].join('\n'),
     );
   }
 
@@ -313,24 +311,29 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     final hasSelection = ref.watch(itemsProvider(key)).isNotEmpty;
     return ListHeader(
       title: appLocalizations.excludeSsids,
+      subTitle: appLocalizations.excludeSsidsDesc,
       actions: [
-        if (hasSelection) ...[
-          IconButtonData(
-            glyph: AppGlyphs.delete,
-            tooltip: appLocalizations.delete,
-            onPressed: _handleDelete,
+        const SizedBox(width: 8),
+        if (hasSelection)
+          CommonMinIconButtonTheme(
+            child: IconButton.filledTonal(
+              tooltip: context.appLocalizations.delete,
+              onPressed: _handleDelete,
+              icon: const Icon(Symbols.delete),
+            ),
           ),
-          IconButtonData(
-            glyph: AppGlyphs.selectAll,
-            tooltip: appLocalizations.selectAll,
-            onPressed: _handleSelectAll,
-          ),
-        ] else
-          IconButtonData(
-            glyph: AppGlyphs.addCircle,
-            tooltip: appLocalizations.add,
-            onPressed: _handleAddOrUpdate,
-          ),
+        const SizedBox(width: 2),
+        CommonMinFilledButtonTheme(
+          child: hasSelection
+              ? FilledButton(
+                  onPressed: _handleSelectAll,
+                  child: Text(appLocalizations.selectAll),
+                )
+              : FilledButton.tonal(
+                  onPressed: _handleAddOrUpdate,
+                  child: Text(appLocalizations.add),
+                ),
+        ),
       ],
     );
   }
@@ -341,7 +344,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
   ) {
     if (excludeSSIDs.isEmpty) {
       return SliverPadding(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(top: 12),
+        padding: sectionPagePadding.copyWith(top: 12),
         sliver: SliverToBoxAdapter(
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 48),
@@ -361,7 +364,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
       length: excludeSSIDs.length,
     );
     return SliverPadding(
-      padding: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.only(top: 12, bottom: 16),
       sliver: SliverReorderableList(
         itemBuilder: (_, index) => itemAt(index),
         proxyDecorator: (child, index, animation) =>
@@ -374,32 +377,40 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
 
   @override
   Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
     final excludeSSIDs = ref.watch(excludeSSIDsProvider);
     final selectedItems = ref.watch(itemsProvider(key));
     return CommonScaffold(
       body: CustomScrollView(
         slivers: [
+          if (system.isIOS)
+            SliverPadding(
+              padding: sectionPagePadding.copyWith(bottom: 0),
+              sliver: SliverToBoxAdapter(
+                child: generateSectionV3(
+                  isFirst: true,
+                  items: [
+                    ListItem.toggle(
+                      title: Text(appLocalizations.alwaysOn),
+                      subtitle: Text(appLocalizations.alwaysOnDesc),
+                      value: ref.watch(alwaysOnProvider),
+                      onChanged: (value) {
+                        ref.read(alwaysOnProvider.notifier).value = value;
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
           SliverPadding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-            ).copyWith(top: context.sectionsTopPadding),
+            padding: sectionPagePadding.copyWith(bottom: 0),
             sliver: SliverToBoxAdapter(child: _buildPrerequisites()),
           ),
           SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: sectionPagePadding.copyWith(bottom: 0),
             sliver: SliverToBoxAdapter(child: _buildExcludeSsidsHeader()),
           ),
           _buildExcludeSsidsList(excludeSSIDs, selectedItems),
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-            ).copyWith(bottom: 16 + context.bottomInset),
-            sliver: SliverToBoxAdapter(
-              child: ListFooter(
-                text: context.appLocalizations.excludeSsidsDesc,
-              ),
-            ),
-          ),
         ],
       ),
       title: context.appLocalizations.onDemand,

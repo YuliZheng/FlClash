@@ -1,6 +1,6 @@
-//go:build !android && !windows
+//go:build !((android || ios) && cgo) && !windows
 
-package core
+package main
 
 import (
 	"fmt"

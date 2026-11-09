@@ -1,55 +1,45 @@
 import 'dart:async';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/core/method.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
-import 'package:fl_clash/ui/ui.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:fl_clash/widgets/config_item.dart';
+import 'package:fl_clash/widgets/list.dart';
+import 'package:fl_clash/widgets/scaffold.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-@immutable
-class Contributor {
-  final String avatar;
-  final String name;
-
-  const Contributor({required this.avatar, required this.name});
-}
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:material_symbols_icons/symbols.dart';
+import 'package:material_ui/material_ui.dart';
 
 class AboutView extends ConsumerWidget {
   const AboutView({super.key});
 
-  static const _contributors = [
-    Contributor(avatar: 'assets/images/avatar/june2.jpg', name: 'June2'),
-    Contributor(avatar: 'assets/images/avatar/arue.jpg', name: 'Arue'),
-  ];
-
   Future<void> _checkUpdate(BuildContext context, WidgetRef ref) async {
-    if (ref.read(loadingProvider(LoadingTag.checkUpdate))) return;
-    final commonAction = ref.read(commonActionProvider.notifier);
-    final result = await globalState.loadingRun(
-      () async => (release: await request.checkForUpdate()),
+    await globalState.safeRun<void>(
+      () async {
+        final data = await request.checkForUpdate();
+        await ref
+            .read(commonActionProvider.notifier)
+            .checkUpdateResultHandle(data: data, isUser: true);
+      },
       title: context.appLocalizations.checkUpdate,
-      tag: LoadingTag.checkUpdate,
-    );
-    if (result == null) return;
-    unawaited(
-      commonAction.checkUpdateResultHandle(data: result.release, isUser: true),
+      silence: false,
     );
   }
 
   Widget _buildLinkItem({
-    required Glyph glyph,
+    required IconData icon,
     required String title,
     required String url,
     required String label,
   }) {
     return ListItem(
-      leading: _LinkBadge(glyph: glyph),
+      leading: _LinkBadge(icon: icon),
       title: Text(title),
       subtitle: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: const GlyphIcon(AppGlyphs.openExternal),
+      trailing: const Icon(Symbols.launch),
       onTap: () {
         dialogs.openUrl(url);
       },
@@ -59,21 +49,12 @@ class AboutView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final appLocalizations = context.appLocalizations;
-    final isLoading = ref.watch(loadingProvider(LoadingTag.checkUpdate));
     return CommonScaffold(
-      isLoading: isLoading,
       title: appLocalizations.about,
       body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-          top: context.contentTopPadding,
-          bottom: 32 + context.bottomInset,
-        ),
+        padding: sectionPagePadding,
         children: [
           _AboutHero(
-            isCheckingUpdate: isLoading,
-            onCheckUpdate: () {
-              _checkUpdate(context, ref);
-            },
             onEnterDeveloperMode: () {
               ref
                   .read(appSettingProvider.notifier)
@@ -85,40 +66,42 @@ class AboutView extends ConsumerWidget {
             },
           ),
           const SizedBox(height: 8),
-          generateSection(
-            title: appLocalizations.more,
+          generateSectionV3(
+            isFirst: true,
+            title: appLocalizations.update,
             items: [
-              _buildLinkItem(
-                glyph: AppGlyphs.code,
-                title: appLocalizations.project,
-                url: 'https://github.com/$repository',
-                label: 'github.com/$repository',
+              ConfigToggleItem(
+                title: (l) => l.autoCheckUpdate,
+                selector: appSettingProvider.select(
+                  (state) => state.autoCheckUpdate,
+                ),
+                onChanged: (ref, value) => ref
+                    .read(appSettingProvider.notifier)
+                    .update((state) => state.copyWith(autoCheckUpdate: value)),
               ),
-              _buildLinkItem(
-                glyph: AppGlyphs.cpu,
-                title: appLocalizations.core,
-                url: 'https://github.com/chen08209/Clash.Meta/tree/FlClash',
-                label: 'github.com/chen08209/Clash.Meta',
-              ),
-              _buildLinkItem(
-                glyph: AppGlyphs.send,
-                title: 'Telegram',
-                url: 'https://t.me/FlClash',
-                label: 't.me/FlClash',
+              ListItem(
+                title: Text(appLocalizations.checkUpdate),
+                onTap: () {
+                  _checkUpdate(context, ref);
+                },
               ),
             ],
           ),
-          generateSection(
-            title: appLocalizations.otherContributors,
+          generateSectionV3(
+            title: appLocalizations.more,
             items: [
-              for (final contributor in _contributors)
-                ListItem(
-                  leading: CircleAvatar(
-                    foregroundImage: AssetImage(contributor.avatar),
-                  ),
-                  title: Text(contributor.name),
-                  subtitle: Text(appLocalizations.appIconDesign),
-                ),
+              _buildLinkItem(
+                icon: Symbols.code,
+                title: appLocalizations.project,
+                url: 'https://github.com/$repository',
+                label: 'Github: $repository',
+              ),
+              _buildLinkItem(
+                icon: Symbols.memory,
+                title: appLocalizations.core,
+                url: 'https://github.com/chenx-dust/mihomo/tree/FlClash',
+                label: 'Github: chenx-dust/mihomo',
+              ),
             ],
           ),
         ],
@@ -127,49 +110,91 @@ class AboutView extends ConsumerWidget {
   }
 }
 
-class _AboutHero extends StatelessWidget {
-  final bool isCheckingUpdate;
-  final VoidCallback onCheckUpdate;
+class _AboutHero extends ConsumerStatefulWidget {
   final VoidCallback onEnterDeveloperMode;
 
-  const _AboutHero({
-    required this.isCheckingUpdate,
-    required this.onCheckUpdate,
-    required this.onEnterDeveloperMode,
-  });
+  const _AboutHero({required this.onEnterDeveloperMode});
 
+  @override
+  ConsumerState<_AboutHero> createState() => _AboutHeroState();
+}
+
+class _AboutHeroState extends ConsumerState<_AboutHero> {
   static const _logoSize = 96.0;
   static const _logoInset = 14.0;
+
+  String? _coreVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    ref.listenManual(coreStatusProvider, (_, status) {
+      if (status == CoreStatus.connected) {
+        _loadCoreVersion();
+      }
+    }, fireImmediately: true);
+  }
+
+  Future<void> _loadCoreVersion() async {
+    if (_coreVersion != null) {
+      return;
+    }
+    try {
+      final version = await ref.read(coreHandlerProvider).getCoreVersion();
+      if (mounted && version.isNotEmpty) {
+        setState(() => _coreVersion = version);
+      }
+    } catch (error) {
+      commonPrint.log(
+        'getCoreVersion error: $error',
+        logLevel: coreFailureLogLevel(error),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = context.colorScheme;
+    final textTheme = context.textTheme;
     final appLocalizations = context.appLocalizations;
+    const logo = _logoSize - _logoInset * 2;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
       child: Column(
         children: [
           _DeveloperModeDetector(
-            onEnterDeveloperMode: onEnterDeveloperMode,
+            onEnterDeveloperMode: widget.onEnterDeveloperMode,
             child: DecoratedBox(
               decoration: ShapeDecoration(
-                color: context.raisedSurfaceLevel.colorOf(colorScheme),
+                color: colorScheme.surfaceContainerHigh,
                 shape: AppShape.all(AppCorner.fit(_logoSize)),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(_logoInset),
-                child: Image.asset(
-                  'assets/images/icon.png',
-                  width: _logoSize - _logoInset * 2,
-                  height: _logoSize - _logoInset * 2,
+                child: SvgPicture.asset(
+                  'assets/images/icon.svg',
+                  width: logo,
+                  height: logo,
                 ),
               ),
             ),
           ),
           const SizedBox(height: 20),
-          Text(
-            appName,
-            style: AppTextStyle.title2.of(context, emphasized: true),
+          Text.rich(
+            TextSpan(
+              style: textTheme.headlineSmall,
+              children: const [
+                TextSpan(
+                  text: appName,
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                TextSpan(
+                  text: ' Patched',
+                  style: TextStyle(fontWeight: FontWeight.w100),
+                ),
+              ],
+            ),
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -182,9 +207,15 @@ class _AboutHero extends StatelessWidget {
                 color: colorScheme.primary,
                 foregroundColor: colorScheme.onPrimary,
               ),
+              if (_coreVersion case final coreVersion?)
+                _Pill(
+                  label: 'mihomo $coreVersion',
+                  color: colorScheme.secondaryContainer,
+                  foregroundColor: colorScheme.onSecondaryContainer,
+                ),
               _Pill(
                 label: 'GPL-3.0',
-                color: context.raisedSurfaceLevel.colorOf(colorScheme),
+                color: colorScheme.surfaceContainerHighest,
                 foregroundColor: colorScheme.onSurfaceVariant,
               ),
             ],
@@ -195,17 +226,11 @@ class _AboutHero extends StatelessWidget {
             child: Text(
               appLocalizations.desc,
               textAlign: TextAlign.center,
-              style: AppTextStyle.subheadline
-                  .of(context)
-                  .copyWith(color: colorScheme.onSurfaceVariant, height: 1.5),
+              style: textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
             ),
-          ),
-          const SizedBox(height: 20),
-          TonalButton(
-            size: TonalButtonSize.bar,
-            glyph: AppGlyphs.sync,
-            label: appLocalizations.checkUpdate,
-            onPressed: isCheckingUpdate ? null : onCheckUpdate,
           ),
         ],
       ),
@@ -232,9 +257,10 @@ class _Pill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         child: Text(
           label,
-          style: AppTextStyle.caption1
-              .of(context, emphasized: true)
-              .copyWith(color: foregroundColor),
+          style: context.textTheme.labelMedium?.copyWith(
+            color: foregroundColor,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -242,26 +268,22 @@ class _Pill extends StatelessWidget {
 }
 
 class _LinkBadge extends StatelessWidget {
-  final Glyph glyph;
+  final IconData icon;
 
-  const _LinkBadge({required this.glyph});
+  const _LinkBadge({required this.icon});
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = context.colorScheme;
     return DecoratedBox(
       decoration: ShapeDecoration(
-        color: context.raisedSurfaceLevel.colorOf(colorScheme),
+        color: colorScheme.secondaryContainer,
         shape: AppShape.md,
       ),
       child: SizedBox.square(
         dimension: 40,
         child: Center(
-          child: GlyphIcon(
-            glyph,
-            size: 20,
-            color: colorScheme.onSurfaceVariant,
-          ),
+          child: Icon(icon, size: 20, color: colorScheme.onSecondaryContainer),
         ),
       ),
     );

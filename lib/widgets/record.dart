@@ -1,93 +1,88 @@
+import 'package:fl_clash/common/clipboard.dart' as clipboard;
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/ui/ui.dart';
-import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-class RecordTextStyles {
-  final TextStyle title;
-  final TextStyle primary;
-  final TextStyle secondary;
+import 'chip.dart';
+import 'list.dart';
 
-  const RecordTextStyles._({
-    required this.title,
-    required this.primary,
-    required this.secondary,
-  });
+class RecordTextStyles {
+  final TextStyle? primary;
+  final TextStyle? secondary;
+  final TextStyle? muted;
+
+  const RecordTextStyles._({this.primary, this.secondary, this.muted});
 
   factory RecordTextStyles.of(BuildContext context) {
     final colorScheme = context.colorScheme;
+    final textTheme = context.textTheme;
+    final secondary = textTheme.bodySmall?.copyWith(
+      color: colorScheme.onSurfaceVariant,
+    );
     return RecordTextStyles._(
-      title: AppTextStyle.subheadline
-          .of(context, emphasized: true)
-          .copyWith(color: colorScheme.onSurface),
-      primary: AppTextStyle.subheadline
-          .of(context)
-          .copyWith(color: colorScheme.onSurface),
-      secondary: AppTextStyle.footnote
-          .of(context)
-          .copyWith(color: colorScheme.onSurfaceVariant),
+      primary: textTheme.bodyMedium?.copyWith(color: colorScheme.onSurface),
+      secondary: secondary,
+      muted: secondary?.copyWith(color: colorScheme.outline),
     );
   }
-}
-
-const recordListGap = 8.0;
-
-double recordListExtentEstimation(int? index, double crossAxisExtent) {
-  return switch (index) {
-    // SuperSliverList gives every child the null estimate unless it is 0.
-    null => 0,
-    _ when index.isEven => 100,
-    _ => recordListGap,
-  };
 }
 
 class RecordListItem extends StatelessWidget {
   final Widget header;
   final Widget body;
+  final Widget? trailing;
+  final RecordTone tone;
   final VoidCallback? onTap;
 
   const RecordListItem({
     super.key,
     required this.header,
     required this.body,
+    this.trailing,
+    this.tone = RecordTone.neutral,
     this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    const shape = AppShape.xl;
-    final level = context.raisedSurfaceLevel;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: DecoratedBox(
-        decoration: ShapeDecoration(
-          color: level.colorOf(context.colorScheme),
-          shape: shape,
-        ),
-        child: Material(
-          type: MaterialType.transparency,
-          child: SurfaceScope(
-            level: level,
-            child: ListTileTheme.merge(
-              shape: shape,
-              child: ListItem(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-                minVerticalPadding: 0,
-                minTileHeight: 0,
-                horizontalTitleGap: 12,
-                tileTitleAlignment: ListTileTitleAlignment.top,
-                onTap: onTap,
-                title: header,
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: body,
-                ),
-              ),
-            ),
+    final trailing = this.trailing;
+    final item = ListItem(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+      minVerticalPadding: 0,
+      minTileHeight: 0,
+      horizontalTitleGap: 12,
+      color: tone.tintColor(context),
+      onTap: onTap,
+      title: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: trailing == null
+                ? body
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(child: body),
+                      trailing,
+                    ],
+                  ),
           ),
-        ),
+        ],
       ),
+    );
+    final accentColor = tone.accentColor(context);
+    if (accentColor == null) {
+      return item;
+    }
+    return DecoratedBox(
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: accentColor, width: 3)),
+      ),
+      child: item,
     );
   }
 }
@@ -102,27 +97,25 @@ class RecordHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final trailing = this.trailing;
     return DefaultTextStyle.merge(
-      style: AppTextStyle.caption1
-          .of(context)
-          .toTabular
-          .copyWith(color: context.colorScheme.onSurfaceVariant),
-      child: SizedBox(
-        width: double.infinity,
-        child: Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 12,
-          runSpacing: 4,
-          children: [
-            Wrap(
+      style: context.textTheme.labelMedium?.copyWith(
+        color: context.colorScheme.onSurfaceVariant,
+        fontWeight: FontWeight.w400,
+        fontFeatures: const [FontFeature.tabularFigures()],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Wrap(
               crossAxisAlignment: WrapCrossAlignment.center,
               spacing: 8,
               runSpacing: 4,
               children: children,
             ),
-            ?trailing,
-          ],
-        ),
+          ),
+          if (trailing != null) const SizedBox(width: 12),
+          ?trailing,
+        ],
       ),
     );
   }
@@ -158,7 +151,20 @@ class RecordTimestamp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(dateTime, maxLines: 1);
+    final split = dateTime.lastIndexOf(' ');
+    return Text.rich(
+      TextSpan(
+        children: [
+          if (split > 0)
+            TextSpan(
+              text: dateTime.substring(0, split + 1),
+              style: TextStyle(color: context.colorScheme.outline),
+            ),
+          TextSpan(text: split > 0 ? dateTime.substring(split + 1) : dateTime),
+        ],
+      ),
+      maxLines: 1,
+    );
   }
 }
 
@@ -169,7 +175,7 @@ class RecordArrow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       '→',
-      style: RecordTextStyles.of(context).secondary.toJetBrainsMono,
+      style: RecordTextStyles.of(context).muted?.toJetBrainsMono,
     );
   }
 }
@@ -185,18 +191,14 @@ class DetailRow extends StatelessWidget {
     : value = Text(value),
       copyText = value;
 
-  Future<void> _copy(BuildContext context, String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!context.mounted) return;
-    context.showNotifier(context.appLocalizations.copySuccess);
-  }
-
   @override
   Widget build(BuildContext context) {
     final value = this.value;
     final copyText = this.copyText;
     return DecorationListItem(
-      onPressed: copyText == null ? null : () => _copy(context, copyText),
+      onPressed: copyText == null
+          ? null
+          : () => clipboard.copyText(context, copyText),
       title: value == null
           ? Text(title)
           : Row(
@@ -209,11 +211,9 @@ class DetailRow extends StatelessWidget {
                     alignment: Alignment.centerRight,
                     child: DefaultTextStyle.merge(
                       textAlign: TextAlign.end,
-                      style: AppTextStyle.subheadline
-                          .of(context)
-                          .copyWith(
-                            color: context.colorScheme.onSurfaceVariant,
-                          ),
+                      style: context.textTheme.bodyMedium?.copyWith(
+                        color: context.colorScheme.onSurfaceVariant,
+                      ),
                       child: value,
                     ),
                   ),
