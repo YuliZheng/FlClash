@@ -26,7 +26,10 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     final original = pubspec.readAsStringSync();
     try {
       pubspec.writeAsStringSync(
-        original.replaceAll(RegExp(r'build_assets:\s*true'), 'build_assets: false'),
+        original.replaceAll(
+          RegExp(r'build_assets:\s*true'),
+          'build_assets: false',
+        ),
       );
       return await action();
     } finally {
@@ -34,15 +37,25 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     }
   }
 
-  var result = await withoutBuildHooks(() => run('dart', [
-    'run', 'build_runner', 'build', '--delete-conflicting-outputs',
-  ]));
+  var result = await withoutBuildHooks(
+    () => run('dart', [
+      'run',
+      'build_runner',
+      'build',
+      '--delete-conflicting-outputs',
+    ]),
+  );
   if (result != 0) return result;
   final generated = await Process.run('git', [
-    'diff', '--', 'lib/models/generated', 'lib/providers/generated',
+    'diff',
+    '--',
+    'lib/models/generated',
+    'lib/providers/generated',
     'lib/database/generated',
   ]);
-  File('${output.path}/generated-source.patch').writeAsStringSync(generated.stdout.toString());
+  File(
+    '${output.path}/generated-source.patch',
+  ).writeAsStringSync(generated.stdout.toString());
 
   final dartFiles = [
     'lib/models/config.dart',
@@ -84,7 +97,8 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     if (result != 0) return result;
   }
 
-  return withoutBuildHooks(() => run('flutter', [
+  return withoutBuildHooks(
+    () => run('flutter', [
       'test',
       'test/common/tailnet_startup_compat_test.dart',
       'test/common/preferences_test.dart',
@@ -96,5 +110,6 @@ Future<int> verifyTailnetBuild(String rootDir) async {
       'test/core/protocol_contract_test.dart',
       'test/database/tailnet_legacy_test.dart',
       'test/database/migration_v1_to_v2_test.dart',
-    ]));
+    ]),
+  );
 }

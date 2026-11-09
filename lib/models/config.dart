@@ -26,7 +26,9 @@ Map<String, Object?> _normalizeConfigJson(Map<String, Object?> json) {
 
   final hotKeyActions = json['hotKeyActions'];
   if (hotKeyActions is List) {
-    final supportedActions = HotAction.values.map((action) => action.name).toSet();
+    final supportedActions = HotAction.values
+        .map((action) => action.name)
+        .toSet();
     final supportedModifiers = KeyboardModifier.values
         .map((modifier) => modifier.name)
         .toSet();
