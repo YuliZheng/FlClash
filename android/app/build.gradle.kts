@@ -70,7 +70,7 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
-                signingConfig = signingConfigs.getByName("debug")
+                throw GradleException("The Tailnet development signing key is required for release builds")
             }
 
             proguardFiles(
