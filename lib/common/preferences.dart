@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'portable_pref.dart';
 
 class Preferences {
+  static const tailnetUpgradeBackupKey = 'tailnet.config.before-startup-fix';
   static Preferences? _instance;
   Completer<SharedPreferences?> sharedPreferencesCompleter = Completer();
 
@@ -91,6 +92,10 @@ class Preferences {
     final configMap = await getConfigMap();
     if (configMap == null) {
       return null;
+    }
+    final store = await sharedPreferencesCompleter.future;
+    if (store != null && !store.containsKey(tailnetUpgradeBackupKey)) {
+      await store.setString(tailnetUpgradeBackupKey, json.encode(configMap));
     }
     return Config.fromJson(configMap);
   }

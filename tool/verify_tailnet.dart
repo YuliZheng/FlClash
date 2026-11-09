@@ -21,7 +21,33 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     return result;
   }
 
+  final pubspec = File('$rootDir/pubspec.yaml');
+  Future<int> withoutBuildHooks(Future<int> Function() action) async {
+    final original = pubspec.readAsStringSync();
+    try {
+      pubspec.writeAsStringSync(
+        original.replaceAll(RegExp(r'build_assets:\s*true'), 'build_assets: false'),
+      );
+      return await action();
+    } finally {
+      pubspec.writeAsStringSync(original);
+    }
+  }
+
+  var result = await withoutBuildHooks(() => run('dart', [
+    'run', 'build_runner', 'build', '--delete-conflicting-outputs',
+  ]));
+  if (result != 0) return result;
+  final generated = await Process.run('git', [
+    'diff', '--', 'lib/models/generated', 'lib/providers/generated',
+    'lib/database/generated',
+  ]);
+  File('${output.path}/generated-source.patch').writeAsStringSync(generated.stdout.toString());
+
   final dartFiles = [
+    'lib/models/config.dart',
+    'lib/common/preferences.dart',
+    'test/common/tailnet_startup_compat_test.dart',
     'lib/core/controller.dart',
     'lib/core/interface.dart',
     'lib/core/method.dart',
@@ -37,7 +63,7 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     'setup.dart',
     'tool/verify_tailnet.dart',
   ];
-  var result = await run('dart', ['format', ...dartFiles]);
+  result = await run('dart', ['format', ...dartFiles]);
   if (result != 0) return result;
   final diff = await Process.run('git', ['diff', '--', ...dartFiles]);
   File(
@@ -58,17 +84,11 @@ Future<int> verifyTailnetBuild(String rootDir) async {
     if (result != 0) return result;
   }
 
-  final pubspec = File('$rootDir/pubspec.yaml');
-  final original = pubspec.readAsStringSync();
-  try {
-    pubspec.writeAsStringSync(
-      original.replaceAll(
-        RegExp(r'build_assets:\s*true'),
-        'build_assets: false',
-      ),
-    );
-    return await run('flutter', [
+  return withoutBuildHooks(() => run('flutter', [
       'test',
+      'test/common/tailnet_startup_compat_test.dart',
+      'test/common/preferences_test.dart',
+      'test/models/config_test.dart',
       'test/widgets/tailscale_control_test.dart',
       'test/widgets/easytier_networking_test.dart',
       'test/providers/state_derived_test.dart',
@@ -76,8 +96,5 @@ Future<int> verifyTailnetBuild(String rootDir) async {
       'test/core/protocol_contract_test.dart',
       'test/database/tailnet_legacy_test.dart',
       'test/database/migration_v1_to_v2_test.dart',
-    ]);
-  } finally {
-    pubspec.writeAsStringSync(original);
-  }
+    ]));
 }

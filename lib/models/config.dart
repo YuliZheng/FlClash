@@ -24,6 +24,27 @@ const defaultForegroundTickerIdleInterval = 2;
 Map<String, Object?> _normalizeConfigJson(Map<String, Object?> json) {
   final normalized = Map<String, Object?>.from(json);
 
+  final hotKeyActions = json['hotKeyActions'];
+  if (hotKeyActions is List) {
+    final supportedActions = HotAction.values.map((action) => action.name).toSet();
+    final supportedModifiers = KeyboardModifier.values
+        .map((modifier) => modifier.name)
+        .toSet();
+    normalized['hotKeyActions'] = [
+      for (final value in hotKeyActions)
+        if (value is Map && supportedActions.contains(value['action']))
+          {
+            ...Map<String, Object?>.from(value),
+            'key': value['key'] is int ? value['key'] : null,
+            'modifiers': value['modifiers'] is List
+                ? (value['modifiers'] as List)
+                      .where(supportedModifiers.contains)
+                      .toList()
+                : <String>[],
+          },
+    ];
+  }
+
   final appSettingProps = json['appSettingProps'];
   if (appSettingProps is Map) {
     final settings = Map<String, Object?>.from(appSettingProps);
