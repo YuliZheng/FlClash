@@ -89,7 +89,7 @@ Future<void> main(List<String> args) async {
     exit(64);
   }
   final targets = createPackageTargets(platform, results['targets']);
-  final androidArch = platform == 'android' ? targetArch : null;
+  final androidArch = platform == 'android' ? targetArch ?? 'arm64' : null;
   final verbose = results['verbose'] as bool;
   final iosExportMethod = results['ipa-export-method'] as String;
   final iosExportOptionsPlist = results['ipa-export-options-plist'] as String?;

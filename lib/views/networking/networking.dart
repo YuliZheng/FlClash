@@ -726,7 +726,7 @@ class _NetworkingViewState extends ConsumerState<NetworkingView>
           : appLocalizations.networking,
       actions: [
         IconButton(
-          tooltip: appLocalizations.refresh,
+          tooltip: appLocalizations.update,
           onPressed: _refreshStatuses,
           icon: const Icon(Symbols.refresh),
         ),

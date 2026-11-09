@@ -23,8 +23,9 @@ void main() {
     registerFallbackValue(const GetOverlayNetworkStatusParams(targets: []));
   });
 
-  for (final fail in [false, true]) {
-    testWidgets('Tailscale switch waits for the core (failure: $fail)', (
+  for (final initialRunning in [true, false]) {
+   for (final fail in [false, true]) {
+    testWidgets('Tailscale switch from $initialRunning (failure: $fail)', (
       tester,
     ) async {
       tester.view.physicalSize = const Size(432, 936);
@@ -32,7 +33,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final core = _Core();
-      var running = true;
+      var running = initialRunning;
       final pending = Completer<OverlayNetworkStatus>();
       OverlayNetworkStatus status() => OverlayNetworkStatus(
         name: 'TAILNET',
@@ -48,7 +49,7 @@ void main() {
       when(() => core.getOverlayNetworkStatus(any())).thenAnswer(
         (_) async => [status()],
       );
-      when(() => core.setTailscaleRunning('TAILNET', false)).thenAnswer(
+      when(() => core.setTailscaleRunning('TAILNET', !initialRunning)).thenAnswer(
         (_) => pending.future,
       );
       final container = ProviderContainer(
@@ -83,25 +84,26 @@ void main() {
       );
       await tester.pumpAndSettle();
       final toggle = find.byKey(const ValueKey('tailscale-running-TAILNET'));
-      expect(tester.widget<Switch>(toggle).value, isTrue);
+      expect(tester.widget<Switch>(toggle).value, initialRunning);
       await tester.tap(toggle);
       await tester.pump();
       expect(tester.widget<Switch>(toggle).onChanged, isNull);
-      expect(tester.widget<Switch>(toggle).value, isTrue);
+      expect(tester.widget<Switch>(toggle).value, initialRunning);
       if (fail) {
         pending.completeError(StateError('connection change failed'));
       } else {
-        running = false;
+        running = !initialRunning;
         pending.complete(status());
       }
       await tester.pumpAndSettle();
-      expect(tester.widget<Switch>(toggle).value, fail);
+      expect(tester.widget<Switch>(toggle).value, fail ? initialRunning : !initialRunning);
       expect(tester.widget<Switch>(toggle).onChanged, isNotNull);
-      verify(() => core.setTailscaleRunning('TAILNET', false)).called(1);
+      verify(() => core.setTailscaleRunning('TAILNET', !initialRunning)).called(1);
       if (fail) {
         expect(find.textContaining('connection change failed'), findsOneWidget);
       }
       expect(tester.takeException(), isNull);
     });
+   }
   }
 }
