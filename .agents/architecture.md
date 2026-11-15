@@ -40,6 +40,16 @@ Key Go core files:
 - `core/lib.go`: CGO exports.
 - `core/server.go`: desktop socket/named-pipe client and framed message forwarding.
 
+## Embedded Tailscale Identity Ownership
+
+Persistent Tailnet controls keep tsnet clients alive independently of individual
+connections. Outbounds sharing a resolved state directory must therefore use the
+ownership gate in `core/mihomo/adapter/outbound/tailscale_ownership.go`: activation
+closes the preceding client before starting its replacement. Older generations
+cannot reactivate or persist running-state changes after replacement. Config
+reloads can terminate existing Tailnet connections so that they reconnect using
+the current client; a late finalizer must never close that replacement.
+
 ## Listener Exposure
 
 `_makeRealProfileTask` in `lib/common/task.dart` writes `mixed-port`, `allow-lan`, and `external-controller` into every
