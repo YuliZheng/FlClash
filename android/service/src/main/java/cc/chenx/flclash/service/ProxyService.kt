@@ -9,6 +9,7 @@ import cc.chenx.flclash.service.modules.ServiceModules
 
 class ProxyService : Service(), ManagedService {
     private val modules = ServiceModules(this)
+    private val memoryTrimmer = CoreMemoryTrimmer()
     private val binder = LocalBinder()
 
     override fun onDestroy() {
@@ -20,8 +21,15 @@ class ProxyService : Service(), ManagedService {
     }
 
     override fun onLowMemory() {
-        Core.forceGC()
+        if (modules.isStarted) {
+            Core.forceGC()
+        }
         super.onLowMemory()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        memoryTrimmer.onTrimMemory(level, active = modules.isStarted)
+        super.onTrimMemory(level)
     }
 
     inner class LocalBinder : Binder() {
@@ -30,6 +38,14 @@ class ProxyService : Service(), ManagedService {
     }
 
     override fun onBind(intent: Intent): IBinder = binder
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        modules.ensureForeground()
+        if (intent?.action != ACTION_KEEP_ALIVE) {
+            notifyVpnStartRequested()
+        }
+        return START_STICKY
+    }
 
     override fun start() {
         try {

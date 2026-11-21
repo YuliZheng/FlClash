@@ -7,9 +7,11 @@ import android.content.ServiceConnection
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import cc.chenx.flclash.common.GlobalState
 import cc.chenx.flclash.common.intent
 import cc.chenx.flclash.core.Core
+import cc.chenx.flclash.service.ACTION_KEEP_ALIVE
 import cc.chenx.flclash.service.ManagedService
 import cc.chenx.flclash.service.ProxyService
 import cc.chenx.flclash.service.ServiceConfig
@@ -104,6 +106,7 @@ object ServiceController {
             return@withLock false
         }
 
+        ensureStickyStart(nextIntent)
         Core.startListener()
         runtime = ServiceRuntime(
             options = options,
@@ -111,6 +114,17 @@ object ServiceController {
             startedAtMillis = runtime?.startedAtMillis ?: System.currentTimeMillis(),
         )
         true
+    }
+
+    private fun ensureStickyStart(serviceIntent: Intent) {
+        val keepAliveIntent = Intent(serviceIntent).apply {
+            action = ACTION_KEEP_ALIVE
+        }
+        runCatching {
+            ContextCompat.startForegroundService(GlobalState.application, keepAliveIntent)
+        }.onFailure { error ->
+            GlobalState.log("Unable to mark background service sticky: $error")
+        }
     }
 
     suspend fun stop() = lock.withLock {

@@ -1,6 +1,7 @@
 package cc.chenx.flclash.service.modules
 
 import android.app.Service
+import cc.chenx.flclash.service.stopForegroundCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,6 +16,26 @@ internal interface ServiceModule {
 internal class ServiceModules(private val service: Service) {
     private var scope: CoroutineScope? = null
     private var modules = emptyList<ServiceModule>()
+
+    @Volatile
+    private var started = false
+
+    @Volatile
+    private var foregroundPromoted = false
+
+    val isStarted: Boolean
+        get() = started
+
+    @Synchronized
+    fun ensureForeground() {
+        val notificationModule = modules.filterIsInstance<NotificationModule>().firstOrNull()
+        if (notificationModule != null) {
+            notificationModule.ensureForeground()
+        } else {
+            promoteServiceForeground(service)
+        }
+        foregroundPromoted = true
+    }
 
     @Synchronized
     fun start() {
@@ -34,10 +55,16 @@ internal class ServiceModules(private val service: Service) {
             }
             scope = nextScope
             modules = nextModules
+            started = true
+            foregroundPromoted = true
         } catch (error: Throwable) {
             nextScope.cancel()
             startedModules.asReversed().forEach { module ->
                 runCatching { module.stop() }
+            }
+            if (foregroundPromoted) {
+                foregroundPromoted = false
+                service.stopForegroundCompat()
             }
             throw error
         }
@@ -45,10 +72,19 @@ internal class ServiceModules(private val service: Service) {
 
     @Synchronized
     fun stop() {
-        val currentScope = scope ?: return
+        val currentScope = scope
+        if (currentScope == null) {
+            if (foregroundPromoted) {
+                foregroundPromoted = false
+                service.stopForegroundCompat()
+            }
+            return
+        }
         val currentModules = modules
         scope = null
         modules = emptyList()
+        started = false
+        foregroundPromoted = false
 
         currentScope.cancel()
         currentModules.asReversed().forEach { module ->

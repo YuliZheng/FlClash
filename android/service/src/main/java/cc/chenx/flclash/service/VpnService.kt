@@ -25,6 +25,7 @@ import android.net.VpnService as SystemVpnService
 
 class VpnService : SystemVpnService(), ManagedService {
     private val modules = ServiceModules(this)
+    private val memoryTrimmer = CoreMemoryTrimmer()
     private val binder = LocalBinder()
     private val tunLock = Any()
     private var tunRunning = false
@@ -88,8 +89,15 @@ class VpnService : SystemVpnService(), ManagedService {
         }
 
     override fun onLowMemory() {
-        Core.forceGC()
+        if (modules.isStarted) {
+            Core.forceGC()
+        }
         super.onLowMemory()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        memoryTrimmer.onTrimMemory(level, active = modules.isStarted)
+        super.onTrimMemory(level)
     }
 
     inner class LocalBinder : Binder() {
@@ -105,10 +113,11 @@ class VpnService : SystemVpnService(), ManagedService {
         }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Android starts always-on VPN through this callback instead of FlClash's bound-service
-        // path. Notify the app layer so it can restore Core and fully initialize the VPN service.
-        notifyVpnStartRequested()
-        return super.onStartCommand(intent, flags, startId)
+        modules.ensureForeground()
+        if (intent?.action != ACTION_KEEP_ALIVE) {
+            notifyVpnStartRequested()
+        }
+        return START_STICKY
     }
 
     override fun onRevoke() {

@@ -525,7 +525,7 @@ func applyConfig(params *SetupParams) error {
 	updateListeners(cfg)
 	reconcileGeoUpdater()
 
-	if features.WithLowMemory {
+	if features.WithLowMemory || features.Android {
 		debug.FreeOSMemory()
 	}
 	return err
