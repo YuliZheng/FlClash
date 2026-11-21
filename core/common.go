@@ -3,6 +3,7 @@ package main
 import (
 	b "bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,8 +46,10 @@ const (
 )
 
 var (
-	configMu      sync.Mutex
-	currentConfig *config.Config
+	configMu             sync.Mutex
+	currentConfig        *config.Config
+	quickSetupConfigHash [sha256.Size]byte
+	hasQuickSetupConfig  bool
 
 	// selectMu serialises proxy-group selection writes. mihomo's Selector.Set
 	// writes s.selected with no lock of its own, so something has to; configMu
@@ -496,13 +499,46 @@ func loadConfig(path string) (*config.Config, error) {
 }
 
 func applyConfig(params *SetupParams) error {
-	runtime.GC()
+	return applyConfigWithMode(params, false)
+}
+
+func applyQuickSetupConfig(params *SetupParams) error {
+	return applyConfigWithMode(params, true)
+}
+
+func finalizeConfigApply(params *SetupParams, cfg *config.Config) {
+	patchSelectGroup(params.SelectedMap)
+	updateListeners(cfg)
+	reconcileGeoUpdater()
+}
+
+func applyConfigWithMode(params *SetupParams, fromQuickSetup bool) error {
 	configMu.Lock()
 	defer configMu.Unlock()
 
 	setTestURL(params.TestURL)
-	cfg, err := loadConfig(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	buf, readErr := os.ReadFile(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	var configHash [sha256.Size]byte
+	if readErr == nil {
+		configHash = sha256.Sum256(buf)
+	}
+	// Consume a matching quickSetup handoff once so MainActivity's startup apply does not rebuild Tailscale, while manual fullSetup reloads still apply.
+	if !fromQuickSetup && readErr == nil && hasQuickSetupConfig && currentConfig != nil && quickSetupConfigHash == configHash {
+		hasQuickSetupConfig = false
+		finalizeConfigApply(params, currentConfig)
+		return nil
+	}
+
+	runtime.GC()
+	var cfg *config.Config
+	var err error
+	if readErr != nil {
+		err = readErr
+	} else {
+		cfg, err = executor.ParseWithBytes(buf)
+	}
 	if err != nil {
+		hasQuickSetupConfig = false
 		// The fallback is what keeps the listeners serving while the host
 		// reports the error, but it applies a config with no proxies in it.
 		// From the UI that is indistinguishable from a subscription that went
@@ -517,13 +553,18 @@ func applyConfig(params *SetupParams) error {
 			return err
 		}
 		cfg = fallback
+	} else {
+		hasQuickSetupConfig = fromQuickSetup
+		if fromQuickSetup {
+			quickSetupConfigHash = configHash
+		} else {
+			quickSetupConfigHash = [sha256.Size]byte{}
+		}
 	}
 
 	currentConfig = cfg
 	hub.ApplyConfig(cfg)
-	patchSelectGroup(params.SelectedMap)
-	updateListeners(cfg)
-	reconcileGeoUpdater()
+	finalizeConfigApply(params, cfg)
 
 	if features.WithLowMemory || features.Android {
 		debug.FreeOSMemory()

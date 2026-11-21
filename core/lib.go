@@ -325,7 +325,7 @@ func quickSetup(callback unsafe.Pointer, initParamsChar *C.char, setupParamsChar
 			return
 		}
 		isRunning.Store(true)
-		invokeResult(callback, handleSetupConfig(setupParams))
+		invokeResult(callback, handleQuickSetupConfig(setupParams))
 	}()
 }
 

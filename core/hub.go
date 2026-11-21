@@ -523,8 +523,8 @@ func handleSetTailscaleRunning(params *TailscaleRunningParams) (*OverlayNetworkS
 		return nil, fmt.Errorf("missing Tailscale running state")
 	}
 	configMu.Lock()
-	defer configMu.Unlock()
 	proxy, exists := tunnel.AllProxies()[params.Name]
+	configMu.Unlock()
 	if !exists || proxy == nil || proxy.Type() != constant.Tailscale {
 		return nil, fmt.Errorf("Tailscale outbound %q not found", params.Name)
 	}
@@ -1290,16 +1290,27 @@ func handleDeleteManagedPath(params *DeleteManagedPathParams) string {
 	return ""
 }
 
-var setupConfig = applyConfig
+var (
+	setupConfig      = applyConfig
+	quickSetupConfig = applyQuickSetupConfig
+)
 
-func handleSetupConfig(params *SetupParams) string {
+func runSetupConfig(params *SetupParams, apply func(*SetupParams) error) string {
 	if !isInit.Load() {
 		return "not initialized"
 	}
-	if err := setupConfig(params); err != nil {
+	if err := apply(params); err != nil {
 		return err.Error()
 	}
 	return ""
+}
+
+func handleSetupConfig(params *SetupParams) string {
+	return runSetupConfig(params, setupConfig)
+}
+
+func handleQuickSetupConfig(params *SetupParams) string {
+	return runSetupConfig(params, quickSetupConfig)
 }
 
 func init() {

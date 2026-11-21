@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
@@ -880,5 +881,96 @@ func TestUpdateConfigAppliesControllerSecretWithoutAddressChange(t *testing.T) {
 	}
 	if currentConfig.Controller.Secret != "" {
 		t.Fatal("secret was not cleared")
+	}
+}
+
+func withTempConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	previousHome := constant.Path.HomeDir()
+	constant.SetHomeDir(home)
+	previousConfig := currentConfig
+	previousHasQuick := hasQuickSetupConfig
+	previousHash := quickSetupConfigHash
+	hasQuickSetupConfig = false
+	quickSetupConfigHash = [32]byte{}
+	t.Cleanup(func() {
+		hasQuickSetupConfig = previousHasQuick
+		quickSetupConfigHash = previousHash
+		currentConfig = previousConfig
+		if cache := cachefile.Cache(); cache != nil && cache.DB != nil &&
+			filepath.Dir(cache.DB.Path()) == home {
+			_ = cache.Close()
+		}
+		constant.SetHomeDir(previousHome)
+	})
+	return filepath.Join(home, "config.yaml")
+}
+
+func TestApplyQuickSetupConfigHandoffSkipsOnceWhenUnchanged(t *testing.T) {
+	configPath := withTempConfigHome(t)
+	if err := os.WriteFile(configPath, []byte("mixed-port: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyQuickSetupConfig(defaultSetupParams()); err != nil {
+		t.Fatalf("applyQuickSetupConfig = %v, want nil", err)
+	}
+	firstCfg := currentConfig
+	if firstCfg == nil || !hasQuickSetupConfig {
+		t.Fatalf("expected active quickSetup handoff after applyQuickSetupConfig")
+	}
+
+	if err := applyConfig(defaultSetupParams()); err != nil {
+		t.Fatalf("first handoff applyConfig = %v, want nil", err)
+	}
+	if currentConfig != firstCfg {
+		t.Fatal("identical config immediately after quickSetup reloaded unexpectedly")
+	}
+	if hasQuickSetupConfig {
+		t.Fatal("handoff flag was not consumed by first applyConfig")
+	}
+
+	if err := applyConfig(defaultSetupParams()); err != nil {
+		t.Fatalf("second applyConfig = %v, want nil", err)
+	}
+	if currentConfig == firstCfg {
+		t.Fatal("subsequent explicit applyConfig did not reload after handoff was consumed")
+	}
+}
+
+func TestApplyQuickSetupConfigHandoffReloadsWhenChanged(t *testing.T) {
+	configPath := withTempConfigHome(t)
+	if err := os.WriteFile(configPath, []byte("mixed-port: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyQuickSetupConfig(defaultSetupParams()); err != nil {
+		t.Fatalf("applyQuickSetupConfig = %v, want nil", err)
+	}
+	firstCfg := currentConfig
+
+	if err := os.WriteFile(configPath, []byte("mixed-port: 0\nallow-lan: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyConfig(defaultSetupParams()); err != nil {
+		t.Fatalf("changed applyConfig = %v, want nil", err)
+	}
+	if currentConfig == firstCfg {
+		t.Fatal("changed config skipped full reload")
+	}
+}
+
+func TestApplyQuickSetupConfigDoesNotArmHandoffOnMalformedConfig(t *testing.T) {
+	configPath := withTempConfigHome(t)
+	if err := os.WriteFile(configPath, []byte("proxies: [unterminated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyQuickSetupConfig(defaultSetupParams()); err == nil {
+		t.Fatal("applyQuickSetupConfig accepted malformed yaml")
+	}
+	if hasQuickSetupConfig {
+		t.Fatal("failed quickSetup armed the handoff fast path")
 	}
 }
